@@ -22,7 +22,8 @@
                         {% endif %}
                     {% endwith %}
 
-                    <form method="POST" action="{{ url_for('profile') }}">
+                    <form method="POST" action="{{ url_for('profile') }}" class="needs-validation" novalidate>
+                        {{ form.csrf_token }}
                         <div class="mb-4">
                             <h4>Account Information</h4>
                             <div class="mb-3">

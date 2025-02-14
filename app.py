@@ -189,22 +189,27 @@ def dashboard():
         recent_tasks=recent_tasks
     )
 
+class LoginForm(FlaskForm):
+    username = StringField('Username', validators=[DataRequired()])
+    password = PasswordField('Password', validators=[DataRequired()])
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if current_user.is_authenticated:
         return redirect(url_for('dashboard'))
     
-    if request.method == 'POST':
-        user = User.query.filter_by(username=request.form['username']).first()
+    form = LoginForm()
+    if request.method == 'POST' and form.validate_on_submit():
+        user = User.query.filter_by(username=form.username.data).first()
         
-        if user and user.check_password(request.form['password']):
+        if user and user.check_password(form.password.data):
             login_user(user)
             flash('Logged in successfully.', 'success')
             return redirect(url_for('dashboard'))
         
         flash('Invalid username or password.', 'danger')
     
-    return render_template('login.html')
+    return render_template('login.html', form=form)
 
 class RegistrationForm(FlaskForm):
     username = StringField('Username', validators=[DataRequired(), Length(min=3, max=20)])
@@ -337,19 +342,23 @@ def get_user(user_id):
     user = User.query.get_or_404(user_id)
     return jsonify(user.to_dict())
 
+class ProfileForm(FlaskForm):
+    current_password = PasswordField('Current Password')
+    new_password = PasswordField('New Password', validators=[Length(min=8)])
+    confirm_password = PasswordField('Confirm Password', validators=[EqualTo('new_password')])
+
 @app.route('/profile', methods=['GET', 'POST'])
 @login_required
 def profile():
-    if request.method == 'POST':
+    form = ProfileForm()
+    if request.method == 'POST' and form.validate_on_submit():
         try:
             # Update password
-            if request.form.get('new_password'):
-                if not current_user.check_password(request.form['current_password']):
+            if form.new_password.data:
+                if not current_user.check_password(form.current_password.data):
                     flash('Current password is incorrect.', 'danger')
-                elif request.form['new_password'] != request.form['confirm_password']:
-                    flash('New passwords do not match.', 'danger')
                 else:
-                    current_user.set_password(request.form['new_password'])
+                    current_user.set_password(form.new_password.data)
                     flash('Password updated successfully.', 'success')
             
             db.session.commit()
@@ -360,7 +369,7 @@ def profile():
         
         return redirect(url_for('profile'))
     
-    return render_template('profile.html')
+    return render_template('profile.html', form=form)
 
 @app.route('/tasks')
 @login_required
