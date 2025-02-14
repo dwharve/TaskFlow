@@ -3,9 +3,11 @@ from flask_login import UserMixin
 from datetime import datetime
 from werkzeug.security import generate_password_hash, check_password_hash
 import json
+from sqlalchemy import event
+from sqlalchemy.orm import scoped_session
+from contextlib import contextmanager
 
-# Initialize SQLAlchemy
-
+# Initialize SQLAlchemy with thread-safe session
 db = SQLAlchemy()
 
 # Models
@@ -27,8 +29,10 @@ class User(UserMixin, db.Model):
         return check_password_hash(self.password_hash, password)
     
     def update_last_login(self):
-        self.last_login = datetime.utcnow()
-        db.session.commit()
+        from app import session_scope
+        with session_scope() as session:
+            self.last_login = datetime.utcnow()
+            session.merge(self)
     
     def to_dict(self):
         return {
@@ -42,110 +46,87 @@ class User(UserMixin, db.Model):
     
     @staticmethod
     def get_all_users():
-        return User.query.all()
+        from app import session_scope
+        with session_scope() as session:
+            return session.query(User).all()
     
     @staticmethod
     def get_active_users():
-        return User.query.filter_by(is_active=True).all()
+        from app import session_scope
+        with session_scope() as session:
+            return session.query(User).filter_by(is_active=True).all()
     
     def deactivate(self):
-        self.is_active = False
-        db.session.commit()
+        from app import session_scope
+        with session_scope() as session:
+            user = session.merge(self)
+            user.is_active = False
     
     def activate(self):
-        self.is_active = True
-        db.session.commit()
-    
-    def __repr__(self):
-        return f'<User {self.username}>'
+        from app import session_scope
+        with session_scope() as session:
+            user = session.merge(self)
+            user.is_active = True
 
 class Task(db.Model):
     __tablename__ = 'tasks'
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    input_block = db.Column(db.String(100), nullable=False)  # The input (formerly scraping) block
-    block_chain = db.Column(db.Text, nullable=False)  # JSON array of processing and action blocks in order
+    input_block = db.Column(db.String(100), nullable=False)
+    block_chain = db.Column(db.Text, nullable=False)
     target_url = db.Column(db.String(500), nullable=False)
     schedule = db.Column(db.String(100))
-    parameters = db.Column(db.Text)  # JSON string of all block parameters
+    parameters = db.Column(db.Text)
     status = db.Column(db.String(20), default='pending')
     last_run = db.Column(db.DateTime)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    block_data = db.Column(db.Text)  # JSON string containing data at each block stage
+    block_data = db.Column(db.Text)
+    version = db.Column(db.Integer, default=1)  # For optimistic locking
     
-    # Add relationship to ItemState
     item_states = db.relationship('ItemState', backref='task', lazy=True,
                                 cascade='all, delete-orphan')
     
+    def update_status(self, new_status):
+        """Thread-safe status update with optimistic locking"""
+        from app import session_scope
+        with session_scope() as session:
+            task = session.merge(self)
+            current_version = task.version
+            task.status = new_status
+            task.version += 1
+            session.flush()
+            
+            # Verify no other transaction has modified this record
+            if task.version != current_version + 1:
+                session.rollback()
+                raise Exception("Task was modified by another transaction")
+    
     def set_parameters(self, parameters):
-        """Set block parameters
-        
-        Args:
-            parameters: Dictionary of parameters for all blocks in the chain
-            Format: {
-                "input": {...},
-                "processing": {
-                    "block_name": {...}
-                },
-                "action": {
-                    "block_name": {...}
-                }
-            }
-        """
-        self.parameters = json.dumps(parameters)
+        from app import session_scope
+        with session_scope() as session:
+            task = session.merge(self)
+            task.parameters = json.dumps(parameters)
     
     def get_parameters(self):
-        """Get block parameters
-        
-        Returns:
-            Dictionary of parameters for all blocks
-        """
         return json.loads(self.parameters) if self.parameters else {}
 
     def set_block_chain(self, blocks):
-        """Set the chain of blocks to execute
-        
-        Args:
-            blocks: List of block identifiers in execution order
-            Format: [
-                {"type": "processing", "name": "block_name"},
-                {"type": "action", "name": "block_name"}
-            ]
-        """
-        self.block_chain = json.dumps(blocks)
+        from app import session_scope
+        with session_scope() as session:
+            task = session.merge(self)
+            task.block_chain = json.dumps(blocks)
     
     def get_block_chain(self):
-        """Get the chain of blocks
-        
-        Returns:
-            List of block identifiers in execution order
-        """
         return json.loads(self.block_chain) if self.block_chain else []
 
     def set_block_data(self, data):
-        """Set data for all blocks in the chain
-        
-        Args:
-            data: Dictionary containing data at each stage
-            Format: {
-                "input": [...],
-                "processing": {
-                    "block_name": [...]
-                },
-                "action": {
-                    "block_name": [...]
-                }
-            }
-        """
-        self.block_data = json.dumps(data)
+        from app import session_scope
+        with session_scope() as session:
+            task = session.merge(self)
+            task.block_data = json.dumps(data)
     
     def get_block_data(self):
-        """Get data for all blocks
-        
-        Returns:
-            Dictionary containing data at each stage with default empty values
-        """
         default_data = {
             "input": [],
             "processing": {},
@@ -157,7 +138,6 @@ class Task(db.Model):
             
         try:
             data = json.loads(self.block_data)
-            # Ensure all required keys exist with defaults
             return {
                 "input": data.get("input", []),
                 "processing": data.get("processing", {}),
@@ -190,22 +170,35 @@ class Settings(db.Model):
     value = db.Column(db.Text, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    version = db.Column(db.Integer, default=1)  # For optimistic locking
 
     @staticmethod
     def get_setting(key, default=None):
-        setting = Settings.query.get(key)
-        return setting.value if setting else default
+        from app import session_scope
+        with session_scope() as session:
+            setting = session.query(Settings).get(key)
+            return setting.value if setting else default
 
     @staticmethod
     def set_setting(key, value):
-        setting = Settings.query.get(key)
-        if setting:
-            setting.value = value
-        else:
-            setting = Settings(key=key, value=value)
-            db.session.add(setting)
-        db.session.commit()
-        return setting
+        from app import session_scope
+        with session_scope() as session:
+            setting = session.query(Settings).get(key)
+            if setting:
+                current_version = setting.version
+                setting.value = value
+                setting.version += 1
+                session.flush()
+                
+                # Verify no other transaction has modified this record
+                if setting.version != current_version + 1:
+                    session.rollback()
+                    raise Exception("Setting was modified by another transaction")
+            else:
+                setting = Settings(key=key, value=value)
+                session.add(setting)
+            session.commit()
+            return setting
 
 # Removed plugin registration code
 

@@ -14,6 +14,7 @@ import secrets
 from flask_wtf import FlaskForm
 from wtforms import StringField, PasswordField
 from wtforms.validators import DataRequired, Length, EqualTo
+from contextlib import contextmanager
 
 from models import db, User, Task, Settings
 from blocks.manager import manager
@@ -130,9 +131,22 @@ def validate_block_parameters(block_name: str, block_type: str, parameters: dict
     
     return validated_params
 
+@contextmanager
+def session_scope():
+    """Provide a transactional scope around a series of operations."""
+    session = db.session()
+    try:
+        yield session
+        session.commit()
+    except:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
 @login_manager.user_loader
 def load_user(user_id):
-    with db.session() as session:
+    with session_scope() as session:
         return session.get(User, int(user_id))
 
 # Template filters
@@ -163,32 +177,33 @@ def index():
 @app.route('/dashboard')
 @login_required
 def dashboard():
-    # Get task statistics
-    total_tasks = Task.query.filter_by(user_id=current_user.id).count()
-    completed_tasks = Task.query.filter_by(user_id=current_user.id, status='completed').count()
-    pending_tasks = Task.query.filter_by(user_id=current_user.id, status='pending').count()
-    failed_tasks = Task.query.filter_by(user_id=current_user.id, status='failed').count()
-    
-    # Get recent tasks
-    recent_tasks = Task.query.filter_by(user_id=current_user.id).order_by(Task.created_at.desc()).limit(5).all()
-    
-    # Get block statistics
-    input_blocks = len(manager.get_blocks_by_type("input"))
-    processing_blocks = len(manager.get_blocks_by_type("processing"))
-    action_blocks = len(manager.get_blocks_by_type("action"))
-    
-    return render_template('dashboard.html',
-        stats={
-            'total_tasks': total_tasks,
-            'completed_tasks': completed_tasks,
-            'pending_tasks': pending_tasks,
-            'failed_tasks': failed_tasks,
-            'input_blocks': input_blocks,
-            'processing_blocks': processing_blocks,
-            'action_blocks': action_blocks
-        },
-        recent_tasks=recent_tasks
-    )
+    with session_scope() as session:
+        # Get task statistics
+        total_tasks = session.query(Task).filter_by(user_id=current_user.id).count()
+        completed_tasks = session.query(Task).filter_by(user_id=current_user.id, status='completed').count()
+        pending_tasks = session.query(Task).filter_by(user_id=current_user.id, status='pending').count()
+        failed_tasks = session.query(Task).filter_by(user_id=current_user.id, status='failed').count()
+        
+        # Get recent tasks
+        recent_tasks = session.query(Task).filter_by(user_id=current_user.id).order_by(Task.created_at.desc()).limit(5).all()
+        
+        # Get block statistics
+        input_blocks = len(manager.get_blocks_by_type("input"))
+        processing_blocks = len(manager.get_blocks_by_type("processing"))
+        action_blocks = len(manager.get_blocks_by_type("action"))
+        
+        return render_template('dashboard.html',
+            stats={
+                'total_tasks': total_tasks,
+                'completed_tasks': completed_tasks,
+                'pending_tasks': pending_tasks,
+                'failed_tasks': failed_tasks,
+                'input_blocks': input_blocks,
+                'processing_blocks': processing_blocks,
+                'action_blocks': action_blocks
+            },
+            recent_tasks=recent_tasks
+        )
 
 class LoginForm(FlaskForm):
     username = StringField('Username', validators=[DataRequired()])
@@ -628,23 +643,70 @@ def view_task(task_id):
 @app.route('/api/tasks/<int:task_id>/run', methods=['POST'])
 @login_required
 def run_task(task_id):
-    task = Task.query.get_or_404(task_id)
-    if task.user_id != current_user.id:
-        return jsonify({'error': 'Access denied'}), 403
-    
-    if task.status == 'running':
-        return jsonify({'error': 'Task is already running'}), 400
-    
-    # Run task in background
-    def run_in_thread(app, task_id):
-        with app.app_context():
-            asyncio.run(scheduler.run_task(task_id))
-    
-    import threading
-    thread = threading.Thread(target=run_in_thread, args=(app, task_id))
-    thread.start()
-    
-    return jsonify({'message': 'Task started'})
+    with session_scope() as session:
+        task = session.query(Task).get(task_id)
+        if not task:
+            return jsonify({'error': 'Task not found'}), 404
+        
+        if task.user_id != current_user.id and not current_user.is_admin:
+            return jsonify({'error': 'Unauthorized'}), 403
+        
+        try:
+            task.update_status('running')
+            session.commit()
+            
+            # Run task in background thread
+            thread = threading.Thread(target=run_in_thread, args=(app, task_id))
+            thread.daemon = True
+            thread.start()
+            
+            return jsonify({'message': 'Task started successfully'})
+        except Exception as e:
+            logger.error(f"Error starting task {task_id}: {str(e)}")
+            task.update_status('failed')
+            return jsonify({'error': str(e)}), 500
+
+def run_in_thread(app, task_id):
+    """Execute task in a separate thread with its own session"""
+    with app.app_context():
+        with session_scope() as session:
+            try:
+                task = session.query(Task).get(task_id)
+                if not task:
+                    logger.error(f"Task {task_id} not found")
+                    return
+                
+                # Get task configuration
+                input_block = manager.get_block("input", task.input_block)()
+                block_chain = task.get_block_chain()
+                parameters = task.get_parameters()
+                
+                # Execute input block
+                input_data = input_block.execute(task.target_url, parameters.get('input', {}))
+                block_data = {"input": input_data}
+                
+                # Execute processing and action blocks
+                current_data = input_data
+                for block_config in block_chain:
+                    block_type = block_config['type']
+                    block_name = block_config['name']
+                    
+                    block = manager.get_block(block_type, block_name)()
+                    current_data = block.execute(current_data, parameters.get(f"{block_type}.{block_name}", {}))
+                    
+                    if block_type not in block_data:
+                        block_data[block_type] = {}
+                    block_data[block_type][block_name] = current_data
+                
+                # Update task with results
+                task.set_block_data(block_data)
+                task.last_run = datetime.utcnow()
+                task.update_status('completed')
+                
+            except Exception as e:
+                logger.error(f"Error executing task {task_id}: {str(e)}")
+                task.update_status('failed')
+                raise
 
 @app.route('/api/blocks/<block_type>/<block_name>/parameters')
 @login_required
