@@ -56,27 +56,10 @@ USER appuser
 # Expose port
 EXPOSE 5000
 
-# Create startup script
-COPY <<-'EOF' /app/start.sh
-#!/bin/sh
-# Initialize the database
-python -c "from app import init_db; init_db()"
+# Copy the start.sh script
+COPY start.sh /app/start.sh
 
-# Start the scheduler in the background
-python -c "from app import app, scheduler; scheduler.start()" &
-
-# Start Gunicorn
-exec gunicorn \
-    --bind 0.0.0.0:5000 \
-    --workers $WORKERS \
-    --timeout $TIMEOUT \
-    --access-logfile - \
-    --error-logfile - \
-    --log-level $LOG_LEVEL \
-    --worker-class sync \
-    app:app
-EOF
-
+# Make the script executable
 RUN chmod +x /app/start.sh
 
 # Set the entrypoint
