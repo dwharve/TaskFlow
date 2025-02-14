@@ -50,17 +50,14 @@ COPY . .
 # Create instance directory for SQLite database
 RUN mkdir -p instance && chown -R appuser:appuser instance
 
+# Make the script executable
+RUN chmod +x /app/start.sh
+
 # Switch to non-root user
 USER appuser
 
 # Expose port
 EXPOSE 5000
-
-# Copy the start.sh script
-COPY start.sh /app/start.sh
-
-# Make the script executable
-RUN chmod +x /app/start.sh
 
 # Set the entrypoint
 ENTRYPOINT ["/app/start.sh"] 
