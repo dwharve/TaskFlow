@@ -80,6 +80,18 @@ Posted on: {{posted_on}}
             Dictionary containing the result of the Slack send operation
         """
         try:
+            # Validate required parameters
+            if 'webhook_url' not in parameters:
+                raise ValueError("Missing required parameter: webhook_url")
+            if 'message_template' not in parameters:
+                raise ValueError("Missing required parameter: message_template")
+
+            # Handle list input by converting to dict
+            if isinstance(item, list):
+                item = {"items": item}
+            elif not isinstance(item, dict):
+                item = {"value": str(item)}
+
             # Only send if there are new items
             if not item.get('is_new', True):
                 logger.info("Skipping Slack message for non-new item")
@@ -90,7 +102,13 @@ Posted on: {{posted_on}}
                 }
 
             # Replace placeholders in message template
-            message = self._replace_placeholders(parameters['message_template'], item)
+            try:
+                message = self._replace_placeholders(parameters['message_template'], item)
+            except Exception as e:
+                logger.error(f"Error replacing placeholders: {str(e)}")
+                logger.error(f"Template: {parameters['message_template']}")
+                logger.error(f"Data: {item}")
+                raise ValueError(f"Error formatting message: {str(e)}")
 
             # Add user mentions if specified
             mentions = parameters.get('mention_users', '').strip()
@@ -122,6 +140,14 @@ Posted on: {{posted_on}}
                 'item': item
             }
 
+        except ValueError as e:
+            error_msg = str(e)
+            logger.error(error_msg)
+            return {
+                'success': False,
+                'error': error_msg,
+                'item': item
+            }
         except requests.exceptions.RequestException as e:
             error_msg = f"Failed to send message to Slack: {str(e)}"
             logger.error(error_msg)

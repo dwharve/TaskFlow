@@ -14,14 +14,22 @@ import secrets
 from flask_wtf import FlaskForm
 from wtforms import StringField, PasswordField
 from wtforms.validators import DataRequired, Length, EqualTo
+import threading
+from sqlalchemy import inspect
 
 from models import db, User, Task, Settings
 from blocks.manager import manager
 from scheduler import scheduler
-from database import session_scope
+from database import session_scope, get_session
 
 # Initialize Flask app
 app = Flask(__name__)
+
+@app.teardown_appcontext
+def remove_session(exception=None):
+    """Remove the session at the end of the request"""
+    session = get_session()
+    session.remove()
 
 def generate_secret_key():
     return secrets.token_hex(32)
@@ -42,6 +50,14 @@ def initialize_secret_key():
     
     return secret_key
 
+def init_db():
+    """Initialize the database"""
+    with app.app_context():
+        # Drop all tables
+        db.drop_all()
+        # Create all tables with updated schema
+        db.create_all()
+
 # Configuration
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///database.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -52,7 +68,14 @@ db.init_app(app)
 
 # Create tables and initialize secret key
 with app.app_context():
-    db.create_all()
+    # Check if we need to initialize the database
+    try:
+        # Try to query the settings table
+        Settings.query.first()
+    except Exception as e:
+        # If there's an error (like missing column), initialize the database
+        init_db()
+    
     app.config['SECRET_KEY'] = initialize_secret_key()
 
 migrate = Migrate(app, db)
@@ -131,23 +154,25 @@ def validate_block_parameters(block_name: str, block_type: str, parameters: dict
     
     return validated_params
 
-@contextmanager
-def session_scope():
-    """Provide a transactional scope around a series of operations."""
-    session = db.session()
-    try:
-        yield session
-        session.commit()
-    except:
-        session.rollback()
-        raise
-    finally:
-        session.close()
-
 @login_manager.user_loader
 def load_user(user_id):
-    with session_scope() as session:
+    """Load user with thread-local session management"""
+    session = get_session()
+    try:
+        # Use modern SQLAlchemy 2.0 API
         return session.get(User, int(user_id))
+    except:
+        return None
+
+# Ensure user is attached to session for each request
+@app.before_request
+def before_request():
+    if current_user.is_authenticated:
+        session = get_session()
+        # Check if the object is attached to a session
+        if not inspect(current_user).persistent:
+            current_user.query = session.query(User)
+            session.merge(current_user)
 
 # Template filters
 @app.template_filter('status_badge')
@@ -409,16 +434,16 @@ def new_task():
             }
             
             # Parse input block parameters
+            input_block = request.form['input_block']
             input_params = {}
             for key, value in request.form.items():
                 if key.startswith('input_param_'):
-                    param_name = key.replace('input_param_', '')
+                    param_name = key.replace('input_param_', '').replace(f"{input_block}_", '')
                     input_params[param_name] = value
             
             logger.debug(f"Input parameters: {input_params}")
             
             # Validate input block parameters
-            input_block = request.form['input_block']
             logger.info(f"Validating input block: {input_block}")
             parameters['input'] = validate_block_parameters(
                 input_block, 'input', input_params)
@@ -455,7 +480,9 @@ def new_task():
                         parameters['processing'][block_name] = validate_block_parameters(
                             block_name, 'processing', block_params)
                     elif block_type == 'action':
-                        parameters['action'] = validate_block_parameters(
+                        if 'action' not in parameters:
+                            parameters['action'] = {}
+                        parameters['action'][block_name] = validate_block_parameters(
                             block_name, 'action', block_params)
                     
                     # Add block to chain
@@ -465,28 +492,31 @@ def new_task():
                     })
             
             logger.info("Creating task object")
-            task = Task(
-                name=request.form['name'],
-                user_id=current_user.id,
-                input_block=input_block,
-                target_url=request.form['target_url'],
-                schedule=request.form.get('schedule')
-            )
-            
-            # Set block chain and parameters
             logger.debug(f"Final block chain: {block_chain}")
             logger.debug(f"Final parameters: {parameters}")
-            task.set_block_chain(block_chain)
-            task.set_parameters(parameters)
             
-            db.session.add(task)
-            db.session.commit()
-            logger.info(f"Task created with ID: {task.id}")
-            
-            # Schedule the task if it has a schedule
-            if task.schedule:
-                logger.info(f"Scheduling task {task.id} with schedule: {task.schedule}")
-                scheduler.schedule_task(task)
+            with session_scope() as session:
+                task = Task(
+                    name=request.form['name'],
+                    user_id=current_user.id,
+                    input_block=input_block,
+                    target_url=request.form['target_url'],
+                    schedule=request.form.get('schedule')
+                )
+                
+                # Set block chain first
+                task.block_chain = json.dumps(block_chain)
+                
+                # Add task to session
+                session.add(task)
+                
+                # Set parameters after task is added to session
+                task.parameters = json.dumps(parameters)
+                
+                # Schedule the task if it has a schedule
+                if task.schedule:
+                    logger.info(f"Scheduling task with schedule: {task.schedule}")
+                    scheduler.schedule_task(task)
             
             flash('Task created successfully.', 'success')
             return redirect(url_for('tasks'))
@@ -644,7 +674,7 @@ def view_task(task_id):
 @login_required
 def run_task(task_id):
     with session_scope() as session:
-        task = session.query(Task).get(task_id)
+        task = session.get(Task, task_id)
         if not task:
             return jsonify({'error': 'Task not found'}), 404
         
@@ -671,37 +701,59 @@ def run_in_thread(app, task_id):
     with app.app_context():
         with session_scope() as session:
             try:
-                task = session.query(Task).get(task_id)
+                task = session.get(Task, task_id)
                 if not task:
                     logger.error(f"Task {task_id} not found")
                     return
-                
-                # Get task configuration
-                input_block = manager.get_block("input", task.input_block)()
-                block_chain = task.get_block_chain()
-                parameters = task.get_parameters()
-                
-                # Execute input block
-                input_data = input_block.execute(task.target_url, parameters.get('input', {}))
-                block_data = {"input": input_data}
-                
-                # Execute processing and action blocks
-                current_data = input_data
-                for block_config in block_chain:
-                    block_type = block_config['type']
-                    block_name = block_config['name']
+
+                async def execute_task():
+                    # Get task configuration
+                    input_block = manager.get_block("input", task.input_block)()
+                    block_chain = task.get_block_chain()
+                    parameters = task.get_parameters()
                     
-                    block = manager.get_block(block_type, block_name)()
-                    current_data = block.execute(current_data, parameters.get(f"{block_type}.{block_name}", {}))
+                    # Execute input block
+                    input_data = await input_block.collect(task.target_url, parameters.get('input', {}))
+                    block_data = {"input": input_data}
                     
-                    if block_type not in block_data:
-                        block_data[block_type] = {}
-                    block_data[block_type][block_name] = current_data
-                
-                # Update task with results
-                task.set_block_data(block_data)
-                task.last_run = datetime.utcnow()
-                task.update_status('completed')
+                    # Execute processing and action blocks
+                    current_data = input_data
+                    for block_config in block_chain:
+                        block_type = block_config['type']
+                        block_name = block_config['name']
+                        
+                        block = manager.get_block(block_type, block_name)()
+                        if block_type == "processing":
+                            block_params = parameters.get('processing', {}).get(block_name, {})
+                            block_params['task_id'] = task.id
+                            current_data = await block.process(current_data, block_params)
+                        elif block_type == "action":
+                            # Action blocks work on individual items
+                            action_results = []
+                            block_params = parameters.get('action', {}).get(block_name, {})
+                            for item in current_data:
+                                try:
+                                    result = await block.execute(item, block_params)
+                                    action_results.append(result)
+                                except Exception as e:
+                                    logger.error(f"Error executing action block {block_name} for item: {str(e)}")
+                                    action_results.append({
+                                        "error": str(e),
+                                        "item": item
+                                    })
+                            current_data = action_results
+                        
+                        if block_type not in block_data:
+                            block_data[block_type] = {}
+                        block_data[block_type][block_name] = current_data
+                    
+                    # Update task with results
+                    task.set_block_data(block_data)
+                    task.last_run = datetime.utcnow()
+                    task.update_status('completed')
+
+                # Run the async function
+                asyncio.run(execute_task())
                 
             except Exception as e:
                 logger.error(f"Error executing task {task_id}: {str(e)}")
@@ -786,30 +838,25 @@ def get_tasks_status():
 @app.route('/api/tasks/<int:task_id>', methods=['DELETE'])
 @login_required
 def delete_task(task_id):
-    task = Task.query.get_or_404(task_id)
-    if task.user_id != current_user.id:
-        return jsonify({'error': 'Access denied'}), 403
-    
-    try:
-        # Remove task from scheduler if scheduled
-        scheduler.remove_task(task)
+    with session_scope() as session:
+        task = session.get(Task, task_id)
+        if not task:
+            return jsonify({'error': 'Task not found'}), 404
         
-        # Delete the task
-        db.session.delete(task)
-        db.session.commit()
+        if task.user_id != current_user.id:
+            return jsonify({'error': 'Access denied'}), 403
         
-        return jsonify({'message': 'Task deleted successfully'})
-    except Exception as e:
-        logger.error(f"Error deleting task {task_id}: {str(e)}")
-        db.session.rollback()
-        return jsonify({'error': 'Failed to delete task'}), 500
-
-def init_db():
-    """Initialize the database"""
-    with app.app_context():
-        db.create_all()
+        try:
+            # Remove task from scheduler if scheduled
+            scheduler.remove_task(task)
+            
+            # Delete the task
+            session.delete(task)
+            
+            return jsonify({'message': 'Task deleted successfully'})
+        except Exception as e:
+            logger.error(f"Error deleting task {task_id}: {str(e)}")
+            return jsonify({'error': 'Failed to delete task'}), 500
 
 if __name__ == '__main__':
-    init_db()
-    scheduler.start()
     app.run(debug=True) 

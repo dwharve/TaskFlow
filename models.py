@@ -74,7 +74,7 @@ class Task(db.Model):
     name = db.Column(db.String(100), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     input_block = db.Column(db.String(100), nullable=False)
-    block_chain = db.Column(db.Text, nullable=False)
+    block_chain = db.Column(db.Text, nullable=False, default='[]')
     target_url = db.Column(db.String(500), nullable=False)
     schedule = db.Column(db.String(100))
     parameters = db.Column(db.Text)
@@ -103,30 +103,33 @@ class Task(db.Model):
                 raise Exception("Task was modified by another transaction")
     
     def set_parameters(self, parameters):
-        from database import session_scope
-        with session_scope() as session:
-            task = session.merge(self)
-            task.parameters = json.dumps(parameters)
+        """Set parameters for all blocks in the chain"""
+        if isinstance(parameters, dict):
+            parameters = json.dumps(parameters)
+        self.parameters = parameters
     
     def get_parameters(self):
+        """Get parameters for all blocks"""
         return json.loads(self.parameters) if self.parameters else {}
-
+    
     def set_block_chain(self, blocks):
-        from database import session_scope
-        with session_scope() as session:
-            task = session.merge(self)
-            task.block_chain = json.dumps(blocks)
+        """Set the chain of blocks to execute"""
+        if isinstance(blocks, list):
+            blocks = json.dumps(blocks)
+        self.block_chain = blocks
     
     def get_block_chain(self):
+        """Get the chain of blocks"""
         return json.loads(self.block_chain) if self.block_chain else []
-
+    
     def set_block_data(self, data):
-        from database import session_scope
-        with session_scope() as session:
-            task = session.merge(self)
-            task.block_data = json.dumps(data)
+        """Set data for all blocks in the chain"""
+        if isinstance(data, dict):
+            data = json.dumps(data)
+        self.block_data = data
     
     def get_block_data(self):
+        """Get data for all blocks"""
         default_data = {
             "input": [],
             "processing": {},

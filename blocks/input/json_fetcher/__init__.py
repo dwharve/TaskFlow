@@ -70,7 +70,9 @@ class JsonFetcher(InputBlock):
             method = parameters.get('method', 'GET').upper()
             
             try:
-                headers = json.loads(parameters.get('headers', '{}'))
+                # Convert single quotes to double quotes for JSON parsing
+                headers_str = parameters.get('headers', '{}').replace("'", '"')
+                headers = json.loads(headers_str)
                 logger.debug(f"Parsed headers: {headers}")
             except json.JSONDecodeError as e:
                 logger.error(f"Error parsing headers JSON: {str(e)}")
