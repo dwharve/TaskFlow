@@ -157,7 +157,8 @@ def format_datetime(value):
 def index():
     if current_user.is_authenticated:
         return redirect(url_for('dashboard'))
-    return render_template('login.html')
+    form = LoginForm()
+    return render_template('login.html', form=form)
 
 @app.route('/dashboard')
 @login_required

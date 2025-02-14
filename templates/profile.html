@@ -32,10 +32,6 @@
                                 <div class="form-text">Username cannot be changed</div>
                             </div>
                             <div class="mb-3">
-                                <label for="email" class="form-label">Email</label>
-                                <input type="email" class="form-control" id="email" name="email" value="{{ current_user.email }}" required>
-                            </div>
-                            <div class="mb-3">
                                 <label class="form-label">Role</label>
                                 <input type="text" class="form-control" value="{% if current_user.is_admin %}Administrator{% else %}User{% endif %}" disabled>
                             </div>
