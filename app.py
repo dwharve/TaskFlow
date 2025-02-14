@@ -223,12 +223,11 @@ def register():
             flash('Username already exists.', 'danger')
             return redirect(url_for('register'))
         
-        user = User(username=form.username.data)
+        user = User(
+            username=form.username.data,
+            is_admin=User.query.count() == 0
+        )
         user.set_password(form.password.data)
-        
-        # Make first user admin
-        if User.query.count() == 0:
-            user.is_admin = True
         
         db.session.add(user)
         db.session.commit()
@@ -259,17 +258,13 @@ def create_user():
     try:
         data = request.get_json()
         username = data['username']
-        email = data['email']
         password = data['password']
         is_admin = data.get('is_admin', False)
         
         if User.query.filter_by(username=username).first():
             return jsonify({'error': 'Username already exists'}), 400
-            
-        if User.query.filter_by(email=email).first():
-            return jsonify({'error': 'Email already exists'}), 400
         
-        user = User(username=username, email=email, is_admin=is_admin)
+        user = User(username=username, is_admin=is_admin)
         user.set_password(password)
         db.session.add(user)
         db.session.commit()
@@ -293,21 +288,14 @@ def edit_user(user_id):
     try:
         data = request.get_json()
         username = data['username']
-        email = data['email']
         is_admin = data.get('is_admin', False)
         
         # Check if username is taken by another user
         existing_user = User.query.filter_by(username=username).first()
         if existing_user and existing_user.id != user_id:
             return jsonify({'error': 'Username already exists'}), 400
-            
-        # Check if email is taken by another user
-        existing_user = User.query.filter_by(email=email).first()
-        if existing_user and existing_user.id != user_id:
-            return jsonify({'error': 'Email already exists'}), 400
         
         user.username = username
-        user.email = email
         user.is_admin = is_admin
         
         # Update password if provided
@@ -354,14 +342,6 @@ def get_user(user_id):
 def profile():
     if request.method == 'POST':
         try:
-            # Update email
-            if 'email' in request.form:
-                email = request.form['email']
-                if User.query.filter_by(email=email).first() and email != current_user.email:
-                    flash('Email already exists.', 'danger')
-                else:
-                    current_user.email = email
-            
             # Update password
             if request.form.get('new_password'):
                 if not current_user.check_password(request.form['current_password']):
