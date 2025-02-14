@@ -11,6 +11,9 @@ import json
 import asyncio
 import logging
 import secrets
+from flask_wtf import FlaskForm
+from wtforms import StringField, PasswordField
+from wtforms.validators import DataRequired, Length, EqualTo
 
 from models import db, User, Task, Settings
 from blocks.manager import manager
@@ -203,22 +206,25 @@ def login():
     
     return render_template('login.html')
 
+class RegistrationForm(FlaskForm):
+    username = StringField('Username', validators=[DataRequired(), Length(min=3, max=20)])
+    password = PasswordField('Password', validators=[DataRequired(), Length(min=8)])
+    confirm_password = PasswordField('Confirm Password', validators=[DataRequired(), EqualTo('password')])
+
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if current_user.is_authenticated:
         return redirect(url_for('dashboard'))
     
-    if request.method == 'POST':
-        if User.query.filter_by(username=request.form['username']).first():
+    form = RegistrationForm()  # Create form instance
+    
+    if request.method == 'POST' and form.validate_on_submit():
+        if User.query.filter_by(username=form.username.data).first():
             flash('Username already exists.', 'danger')
             return redirect(url_for('register'))
         
-        if request.form['password'] != request.form['confirm_password']:
-            flash('Passwords do not match.', 'danger')
-            return redirect(url_for('register'))
-        
-        user = User(username=request.form['username'])
-        user.set_password(request.form['password'])
+        user = User(username=form.username.data)
+        user.set_password(form.password.data)
         
         # Make first user admin
         if User.query.count() == 0:
@@ -230,7 +236,7 @@ def register():
         flash('Registration successful. Please login.', 'success')
         return redirect(url_for('login'))
     
-    return render_template('register.html')
+    return render_template('register.html', form=form)  # Pass form to template
 
 @app.route('/logout')
 @login_required
