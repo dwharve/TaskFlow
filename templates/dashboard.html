@@ -1,0 +1,297 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Web Scraper{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <h2 class="mb-4">Dashboard</h2>
+
+    <!-- Statistics Cards -->
+    <div class="row mb-4">
+        <!-- Task Statistics -->
+        <div class="col-md-6 col-xl-3 mb-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="d-flex align-items-center">
+                        <div class="flex-shrink-0 me-3">
+                            <div class="avatar avatar-sm bg-primary bg-opacity-10 rounded">
+                                <i class="fas fa-tasks fa-lg text-primary"></i>
+                            </div>
+                        </div>
+                        <div class="flex-grow-1">
+                            <h6 class="mb-1">Total Tasks</h6>
+                            <h4 class="mb-0">{{ stats.total_tasks }}</h4>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-6 col-xl-3 mb-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="d-flex align-items-center">
+                        <div class="flex-shrink-0 me-3">
+                            <div class="avatar avatar-sm bg-success bg-opacity-10 rounded">
+                                <i class="fas fa-check-circle fa-lg text-success"></i>
+                            </div>
+                        </div>
+                        <div class="flex-grow-1">
+                            <h6 class="mb-1">Completed Tasks</h6>
+                            <h4 class="mb-0">{{ stats.completed_tasks }}</h4>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-6 col-xl-3 mb-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="d-flex align-items-center">
+                        <div class="flex-shrink-0 me-3">
+                            <div class="avatar avatar-sm bg-warning bg-opacity-10 rounded">
+                                <i class="fas fa-clock fa-lg text-warning"></i>
+                            </div>
+                        </div>
+                        <div class="flex-grow-1">
+                            <h6 class="mb-1">Pending Tasks</h6>
+                            <h4 class="mb-0">{{ stats.pending_tasks }}</h4>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-6 col-xl-3 mb-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="d-flex align-items-center">
+                        <div class="flex-shrink-0 me-3">
+                            <div class="avatar avatar-sm bg-danger bg-opacity-10 rounded">
+                                <i class="fas fa-exclamation-circle fa-lg text-danger"></i>
+                            </div>
+                        </div>
+                        <div class="flex-grow-1">
+                            <h6 class="mb-1">Failed Tasks</h6>
+                            <h4 class="mb-0">{{ stats.failed_tasks }}</h4>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Block Statistics -->
+    <div class="row mb-4">
+        <div class="col-md-4 mb-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="d-flex align-items-center">
+                        <div class="flex-shrink-0 me-3">
+                            <div class="avatar avatar-sm bg-primary bg-opacity-10 rounded">
+                                <i class="fas fa-arrow-right-to-bracket fa-lg text-primary"></i>
+                            </div>
+                        </div>
+                        <div class="flex-grow-1">
+                            <h6 class="mb-1">Input Blocks</h6>
+                            <h4 class="mb-0">{{ stats.input_blocks }}</h4>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-4 mb-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="d-flex align-items-center">
+                        <div class="flex-shrink-0 me-3">
+                            <div class="avatar avatar-sm bg-purple bg-opacity-10 rounded">
+                                <i class="fas fa-cogs fa-lg text-purple"></i>
+                            </div>
+                        </div>
+                        <div class="flex-grow-1">
+                            <h6 class="mb-1">Processing Blocks</h6>
+                            <h4 class="mb-0">{{ stats.processing_blocks }}</h4>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-4 mb-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="d-flex align-items-center">
+                        <div class="flex-shrink-0 me-3">
+                            <div class="avatar avatar-sm bg-success bg-opacity-10 rounded">
+                                <i class="fas fa-play fa-lg text-success"></i>
+                            </div>
+                        </div>
+                        <div class="flex-grow-1">
+                            <h6 class="mb-1">Action Blocks</h6>
+                            <h4 class="mb-0">{{ stats.action_blocks }}</h4>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recent Tasks -->
+    <div class="card">
+        <div class="card-header">
+            <div class="d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0">Recent Tasks</h5>
+                <a href="{{ url_for('tasks') }}" class="btn btn-primary btn-sm">View All</a>
+            </div>
+        </div>
+        <div class="card-body">
+            {% if recent_tasks %}
+            <div class="table-responsive">
+                <table class="table table-hover">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Block Chain</th>
+                            <th>Status</th>
+                            <th>Last Run</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for task in recent_tasks %}
+                        <tr class="task-row" onclick="viewTask({{ task.id }}, event)" data-task-id="{{ task.id }}">
+                            <td>{{ task.name }}</td>
+                            <td>
+                                <div class="block-chain-preview">
+                                    <span class="block input-block">{{ task.input_block }}</span>
+                                    {% for block in task.get_block_chain() %}
+                                    <span class="chain-arrow">→</span>
+                                    <span class="block {{ block.type }}-block">{{ block.name }}</span>
+                                    {% endfor %}
+                                </div>
+                            </td>
+                            <td><span class="badge {{ task.status | status_badge }}">{{ task.status }}</span></td>
+                            <td><span data-last-run>{{ task.last_run | datetime or 'Never' }}</span></td>
+                            <td>
+                                <div class="btn-group">
+                                    <button onclick="runTask({{ task.id }})" class="btn btn-sm btn-success" title="Run Task">
+                                        <i class="fas fa-play"></i>
+                                    </button>
+                                    <a href="{{ url_for('edit_task', task_id=task.id) }}" class="btn btn-sm btn-primary" title="Edit Task">
+                                        <i class="fas fa-edit"></i>
+                                    </a>
+                                </div>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="text-center py-4">
+                <i class="fas fa-tasks fa-3x text-muted mb-3"></i>
+                <h5>No Tasks Yet</h5>
+                <p class="text-muted">Create your first task to get started!</p>
+                <a href="{{ url_for('new_task') }}" class="btn btn-primary">
+                    <i class="fas fa-plus me-2"></i>Create Task
+                </a>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<style>
+.task-row {
+    cursor: pointer;
+}
+
+.task-row:hover {
+    background-color: rgba(0,0,0,0.05);
+}
+
+.avatar {
+    width: 48px;
+    height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.text-purple {
+    color: #9c27b0;
+}
+
+.bg-purple {
+    background-color: #9c27b0;
+}
+
+.block-chain-preview {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+
+.block-chain-preview .block {
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.875rem;
+    white-space: nowrap;
+}
+
+.block-chain-preview .input-block {
+    background-color: #e3f2fd;
+    border: 1px solid #90caf9;
+}
+
+.block-chain-preview .processing-block {
+    background-color: #f3e5f5;
+    border: 1px solid #ce93d8;
+}
+
+.block-chain-preview .action-block {
+    background-color: #e8f5e9;
+    border: 1px solid #a5d6a7;
+}
+
+.block-chain-preview .chain-arrow {
+    color: #6c757d;
+    font-weight: bold;
+}
+</style>
+
+<script>
+function viewTask(taskId, event) {
+    // Don't navigate if clicking on buttons
+    if (event.target.closest('.btn-group')) {
+        return;
+    }
+    window.location.href = `/tasks/${taskId}`;
+}
+
+async function runTask(taskId) {
+    try {
+        const response = await fetch(`/api/tasks/${taskId}/run`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        if (response.ok) {
+            startPollingTask(taskId);
+        } else {
+            const data = await response.json();
+            alert(data.error || 'Failed to run task');
+        }
+    } catch (error) {
+        console.error('Error running task:', error);
+        alert('Failed to run task');
+    }
+}
+</script>
+{% endblock %} 

@@ -1,0 +1,284 @@
+{% extends "base.html" %}
+
+{% block title %}View Task - {{ task.name }} - Web Scraper{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2>{{ task.name }}</h2>
+        <div>
+            <button class="btn btn-primary" onclick="runTask({{ task.id }})">Run Now</button>
+            <a href="{{ url_for('edit_task', task_id=task.id) }}" class="btn btn-secondary">Edit</a>
+            <button class="btn btn-danger" onclick="deleteTask({{ task.id }})">Delete</button>
+        </div>
+    </div>
+
+    <div class="row">
+        <!-- Task Details -->
+        <div class="col-md-4">
+            <div class="card mb-4 task-details" data-task-id="{{ task.id }}">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">Task Details</h5>
+                </div>
+                <div class="card-body">
+                    <p><strong>Status:</strong> <span class="badge {{ task.status | status_badge }}">{{ task.status }}</span></p>
+                    <p><strong>Target URL:</strong> <a href="{{ task.target_url }}" target="_blank">{{ task.target_url }}</a></p>
+                    <p><strong>Schedule:</strong> {{ task.schedule or 'Manual execution only' }}</p>
+                    <p><strong>Last Run:</strong> <span data-last-run>{{ task.last_run | datetime or 'Never' }}</span></p>
+                    <p><strong>Created:</strong> {{ task.created_at | datetime }}</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Block Chain -->
+        <div class="col-md-8">
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">Block Chain</h5>
+                </div>
+                <div class="card-body">
+                    <!-- Input Block -->
+                    <div class="block-chain-item">
+                        <h6>Input Block</h6>
+                        <div class="block-info">
+                            <p><strong>{{ task.input_block }}</strong></p>
+                            {% if parameters.input %}
+                            <div class="parameters">
+                                <strong>Parameters:</strong>
+                                <ul>
+                                    {% for name, value in parameters.input.items() %}
+                                    <li>{{ name }}: {{ value }}</li>
+                                    {% endfor %}
+                                </ul>
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    <!-- Processing Blocks -->
+                    {% for block in block_chain %}
+                    {% if block.type == 'processing' %}
+                    <div class="block-chain-arrow">↓</div>
+                    <div class="block-chain-item">
+                        <h6>Processing Block</h6>
+                        <div class="block-info">
+                            <p><strong>{{ block.name }}</strong></p>
+                            {% if parameters.processing and parameters.processing[block.name] %}
+                            <div class="parameters">
+                                <strong>Parameters:</strong>
+                                <ul>
+                                    {% for name, value in parameters.processing[block.name].items() %}
+                                    <li>{{ name }}: {{ value }}</li>
+                                    {% endfor %}
+                                </ul>
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endif %}
+                    {% endfor %}
+
+                    <!-- Action Block -->
+                    {% for block in block_chain %}
+                    {% if block.type == 'action' %}
+                    <div class="block-chain-arrow">↓</div>
+                    <div class="block-chain-item">
+                        <h6>Action Block</h6>
+                        <div class="block-info">
+                            <p><strong>{{ block.name }}</strong></p>
+                            {% if parameters.action %}
+                            <div class="parameters">
+                                <strong>Parameters:</strong>
+                                <ul>
+                                    {% for name, value in parameters.action.items() %}
+                                    <li>{{ name }}: {{ value }}</li>
+                                    {% endfor %}
+                                </ul>
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endif %}
+                    {% endfor %}
+                </div>
+            </div>
+
+            <!-- Block Data -->
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">Block Data</h5>
+                </div>
+                <div class="card-body">
+                    <ul class="nav nav-tabs" role="tablist">
+                        <!-- Input Data Tab -->
+                        <li class="nav-item">
+                            <a class="nav-link active" data-bs-toggle="tab" href="#input-data">
+                                Input Data
+                            </a>
+                        </li>
+
+                        <!-- Processing Data Tabs -->
+                        {% for block in block_chain %}
+                        {% if block.type == 'processing' %}
+                        <li class="nav-item">
+                            <a class="nav-link" data-bs-toggle="tab" href="#processing-{{ block.name }}">
+                                {{ block.name }}
+                            </a>
+                        </li>
+                        {% endif %}
+                        {% endfor %}
+
+                        <!-- Action Data Tab -->
+                        {% for block in block_chain %}
+                        {% if block.type == 'action' %}
+                        <li class="nav-item">
+                            <a class="nav-link" data-bs-toggle="tab" href="#action-data">
+                                Action Results
+                            </a>
+                        </li>
+                        {% endif %}
+                        {% endfor %}
+                    </ul>
+
+                    <div class="tab-content mt-3">
+                        <!-- Input Data Content -->
+                        <div class="tab-pane fade show active" id="input-data">
+                            {% if block_data.input %}
+                                <pre class="data-preview">{{ block_data.input | tojson(indent=2) }}</pre>
+                            {% else %}
+                                <div class="info-message">
+                                    <i class="fas fa-info-circle me-2"></i>No input data available yet. Run the task to collect data.
+                                </div>
+                            {% endif %}
+                        </div>
+
+                        <!-- Processing Data Content -->
+                        {% for block in block_chain %}
+                        {% if block.type == 'processing' %}
+                        <div class="tab-pane fade" id="processing-{{ block.name }}">
+                            {% if block_data.processing and block_data.processing[block.name] %}
+                                <pre class="data-preview">{{ block_data.processing[block.name] | tojson(indent=2) }}</pre>
+                            {% else %}
+                                <div class="info-message">
+                                    <i class="fas fa-info-circle me-2"></i>No processed data available yet for {{ block.name }}.
+                                </div>
+                            {% endif %}
+                        </div>
+                        {% endif %}
+                        {% endfor %}
+
+                        <!-- Action Data Content -->
+                        {% for block in block_chain %}
+                        {% if block.type == 'action' %}
+                        <div class="tab-pane fade" id="action-data">
+                            {% if block_data.action and block_data.action[block.name] %}
+                                <pre class="data-preview">{{ block_data.action[block.name] | tojson(indent=2) }}</pre>
+                            {% else %}
+                                <div class="info-message">
+                                    <i class="fas fa-info-circle me-2"></i>No action results available yet for {{ block.name }}.
+                                </div>
+                            {% endif %}
+                        </div>
+                        {% endif %}
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+.block-chain-item {
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    padding: 15px;
+    margin-bottom: 10px;
+}
+
+.block-chain-arrow {
+    text-align: center;
+    font-size: 24px;
+    margin: 10px 0;
+    color: #6c757d;
+}
+
+.block-info {
+    margin-left: 15px;
+}
+
+.parameters {
+    margin-top: 10px;
+}
+
+.data-preview {
+    background-color: #f8f9fa;
+    padding: 15px;
+    border-radius: 4px;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+/* Custom info message style */
+.info-message {
+    padding: 1rem;
+    margin-bottom: 1rem;
+    border-radius: 0.375rem;
+    background-color: #e3f2fd;
+    border: 1px solid #90caf9;
+    color: #0c5460;
+}
+
+.info-message i {
+    color: #0c5460;
+}
+</style>
+
+<script>
+async function runTask(taskId) {
+    try {
+        const response = await fetch(`/api/tasks/${taskId}/run`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        if (response.ok) {
+            startPollingTask(taskId);
+        } else {
+            const data = await response.json();
+            alert(data.error || 'Failed to run task');
+        }
+    } catch (error) {
+        console.error('Error running task:', error);
+        alert('Failed to run task');
+    }
+}
+
+async function deleteTask(taskId) {
+    if (!confirm('Are you sure you want to delete this task? This action cannot be undone.')) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/tasks/${taskId}`, {
+            method: 'DELETE',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        if (response.ok) {
+            window.location.href = "{{ url_for('tasks') }}";
+        } else {
+            const data = await response.json();
+            alert(data.error || 'Failed to delete task');
+        }
+    } catch (error) {
+        console.error('Error deleting task:', error);
+        alert('Failed to delete task');
+    }
+}
+</script>
+{% endblock %} 

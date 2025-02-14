@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+
+{% block title %}Blocks - Web Scraper{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <h2 class="mb-4">Available Blocks</h2>
+
+    <!-- Input Blocks -->
+    <div class="card mb-4">
+        <div class="card-header bg-primary text-white">
+            <h5 class="card-title mb-0">
+                <i class="fas fa-arrow-right-to-bracket me-2"></i>Input Blocks
+            </h5>
+        </div>
+        <div class="card-body">
+            <div class="row">
+                {% for name, block in input_blocks.items() %}
+                <div class="col-md-6 col-lg-4 mb-3">
+                    <div class="card h-100 block-card input-block">
+                        <div class="card-body">
+                            <h5 class="card-title">{{ block().name }}</h5>
+                            <p class="card-text text-muted">{{ block().description }}</p>
+                            <div class="mt-3">
+                                <small class="text-muted">Version: {{ block().version }}</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Processing Blocks -->
+    <div class="card mb-4">
+        <div class="card-header bg-purple text-white">
+            <h5 class="card-title mb-0">
+                <i class="fas fa-cogs me-2"></i>Processing Blocks
+            </h5>
+        </div>
+        <div class="card-body">
+            <div class="row">
+                {% for name, block in processing_blocks.items() %}
+                <div class="col-md-6 col-lg-4 mb-3">
+                    <div class="card h-100 block-card processing-block">
+                        <div class="card-body">
+                            <h5 class="card-title">{{ block().name }}</h5>
+                            <p class="card-text text-muted">{{ block().description }}</p>
+                            <div class="mt-3">
+                                <small class="text-muted">Version: {{ block().version }}</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Action Blocks -->
+    <div class="card mb-4">
+        <div class="card-header bg-success text-white">
+            <h5 class="card-title mb-0">
+                <i class="fas fa-play me-2"></i>Action Blocks
+            </h5>
+        </div>
+        <div class="card-body">
+            <div class="row">
+                {% for name, block in action_blocks.items() %}
+                <div class="col-md-6 col-lg-4 mb-3">
+                    <div class="card h-100 block-card action-block">
+                        <div class="card-body">
+                            <h5 class="card-title">{{ block().name }}</h5>
+                            <p class="card-text text-muted">{{ block().description }}</p>
+                            <div class="mt-3">
+                                <small class="text-muted">Version: {{ block().version }}</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+.bg-purple {
+    background-color: #9c27b0;
+}
+
+.block-card {
+    transition: transform 0.2s;
+    border: none;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.block-card:hover {
+    transform: translateY(-5px);
+}
+
+.block-card.input-block {
+    border-top: 3px solid #007bff;
+}
+
+.block-card.processing-block {
+    border-top: 3px solid #9c27b0;
+}
+
+.block-card.action-block {
+    border-top: 3px solid #28a745;
+}
+
+.card-header h5 {
+    margin: 0;
+    font-size: 1.1rem;
+}
+
+.card-body h5 {
+    font-size: 1rem;
+    font-weight: 600;
+}
+
+.card-text {
+    font-size: 0.9rem;
+}
+</style>
+{% endblock %} 

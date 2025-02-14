@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+
+{% block title %}Tasks - Web Scraper{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2>Tasks</h2>
+        <a href="{{ url_for('new_task') }}" class="btn btn-primary">
+            <i class="fas fa-plus"></i> New Task
+        </a>
+    </div>
+
+    {% if tasks %}
+    <div class="table-responsive">
+        <table class="table table-hover">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Block Chain</th>
+                    <th>Schedule</th>
+                    <th>Status</th>
+                    <th>Last Run</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for task in tasks %}
+                <tr class="task-row" onclick="viewTask({{ task.id }}, event)" data-task-id="{{ task.id }}">
+                    <td>{{ task.name }}</td>
+                    <td>
+                        <div class="block-chain-preview">
+                            <span class="block input-block">{{ task.input_block }}</span>
+                            {% for block in task.get_block_chain() %}
+                            <span class="chain-arrow">→</span>
+                            <span class="block {{ block.type }}-block">{{ block.name }}</span>
+                            {% endfor %}
+                        </div>
+                    </td>
+                    <td>{{ task.schedule or 'Manual' }}</td>
+                    <td><span class="badge {{ task.status | status_badge }}">{{ task.status }}</span></td>
+                    <td><span data-last-run>{{ task.last_run | datetime or 'Never' }}</span></td>
+                    <td>
+                        <div class="btn-group">
+                            <button onclick="runTask({{ task.id }})" class="btn btn-sm btn-success" title="Run Task">
+                                <i class="fas fa-play"></i>
+                            </button>
+                            <a href="{{ url_for('edit_task', task_id=task.id) }}" class="btn btn-sm btn-primary" title="Edit Task">
+                                <i class="fas fa-edit"></i>
+                            </a>
+                            <button onclick="deleteTask({{ task.id }})" class="btn btn-sm btn-danger" title="Delete Task">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="alert alert-info">
+        <i class="fas fa-info-circle me-2"></i>No tasks found. Create your first task to get started.
+    </div>
+    {% endif %}
+</div>
+
+<style>
+.task-row {
+    cursor: pointer;
+}
+
+.task-row:hover {
+    background-color: rgba(0,0,0,0.05);
+}
+
+.block-chain-preview {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+
+.block-chain-preview .block {
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.875rem;
+    white-space: nowrap;
+}
+
+.block-chain-preview .input-block {
+    background-color: #e3f2fd;
+    border: 1px solid #90caf9;
+}
+
+.block-chain-preview .processing-block {
+    background-color: #f3e5f5;
+    border: 1px solid #ce93d8;
+}
+
+.block-chain-preview .action-block {
+    background-color: #e8f5e9;
+    border: 1px solid #a5d6a7;
+}
+
+.block-chain-preview .chain-arrow {
+    color: #6c757d;
+    font-weight: bold;
+}
+</style>
+
+<script>
+function viewTask(taskId, event) {
+    // Don't navigate if clicking on buttons
+    if (event.target.closest('.btn-group')) {
+        return;
+    }
+    window.location.href = `/tasks/${taskId}`;
+}
+
+async function runTask(taskId) {
+    try {
+        const response = await fetch(`/api/tasks/${taskId}/run`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        if (response.ok) {
+            startPollingTask(taskId);
+        } else {
+            const data = await response.json();
+            alert(data.error || 'Failed to run task');
+        }
+    } catch (error) {
+        console.error('Error running task:', error);
+        alert('Failed to run task');
+    }
+}
+
+async function deleteTask(taskId) {
+    if (!confirm('Are you sure you want to delete this task? This action cannot be undone.')) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/tasks/${taskId}`, {
+            method: 'DELETE',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        if (response.ok) {
+            location.reload();
+        } else {
+            const data = await response.json();
+            alert(data.error || 'Failed to delete task');
+        }
+    } catch (error) {
+        console.error('Error deleting task:', error);
+        alert('Failed to delete task');
+    }
+}
+</script>
+{% endblock %} 

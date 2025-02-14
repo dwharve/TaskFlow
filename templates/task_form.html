@@ -1,0 +1,787 @@
+{% extends "base.html" %}
+
+{% block title %}{{ task.id|default(false) and 'Edit' or 'New' }} Task - Web Scraper{% endblock %}
+
+{% block head %}
+<style>
+.block-canvas {
+    position: relative;
+    height: 600px;
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    margin-bottom: 20px;
+    overflow: auto;
+}
+
+.block-node {
+    position: absolute;
+    width: 200px;
+    background-color: white;
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    padding: 10px;
+    z-index: 1;
+}
+
+.block-node.input-block {
+    background-color: #e3f2fd;
+    border-color: #90caf9;
+}
+
+.block-node.processing-block {
+    background-color: #f3e5f5;
+    border-color: #ce93d8;
+}
+
+.block-node.action-block {
+    background-color: #e8f5e9;
+    border-color: #a5d6a7;
+}
+
+.block-node h6 {
+    margin: 0 0 10px 0;
+    padding-bottom: 5px;
+    border-bottom: 1px solid #dee2e6;
+}
+
+.block-node .block-params {
+    margin-top: 10px;
+}
+
+.block-node .block-controls {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+}
+
+.block-node .block-controls button {
+    padding: 2px 5px;
+    font-size: 12px;
+}
+
+.block-toolbox {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    background: white;
+    padding: 10px;
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    z-index: 2;
+}
+
+.endpoint {
+    width: 12px;
+    height: 12px;
+    background-color: #6c757d;
+    border-radius: 50%;
+    cursor: pointer;
+}
+
+.endpoint.input {
+    background-color: #007bff;
+}
+
+.endpoint.output {
+    background-color: #28a745;
+}
+
+.block-params textarea.email-body-template {
+    font-family: monospace;
+    font-size: 14px;
+    min-height: 200px;
+    white-space: pre;
+    tab-size: 4;
+}
+
+.block-params .template-help {
+    font-size: 0.875rem;
+    color: #6c757d;
+    margin-top: 0.5rem;
+    padding: 0.5rem;
+    background-color: #f8f9fa;
+    border-radius: 4px;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <h2>{{ task.id|default(false) and 'Edit' or 'Create New' }} Task</h2>
+    <form method="POST" id="taskForm" class="mt-4">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <!-- Basic Task Information -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="card-title mb-0">Task Details</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="mb-3">
+                            <label for="name" class="form-label">Task Name</label>
+                            <input type="text" class="form-control" id="name" name="name" value="{{ task.name|default('') }}" required>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="mb-3">
+                            <label for="schedule_type" class="form-label">Schedule Type</label>
+                            <select class="form-select" id="schedule_type" name="schedule_type" onchange="updateScheduleInterface()">
+                                <option value="manual">Manual (No Schedule)</option>
+                                <option value="hourly">Every X Hours</option>
+                                <option value="daily">Daily</option>
+                                <option value="weekly">Weekly</option>
+                                <option value="advanced">Advanced (Cron Expression)</option>
+                            </select>
+                        </div>
+                        
+                        <!-- Hourly Schedule Interface -->
+                        <div id="hourly_schedule" class="schedule-interface" style="display: none;">
+                            <div class="mb-3">
+                                <label for="hours_interval" class="form-label">Run Every</label>
+                                <div class="input-group">
+                                    <input type="number" class="form-control" id="hours_interval" name="hours_interval" 
+                                           min="1" max="24" value="1">
+                                    <span class="input-group-text">hour(s)</span>
+                                </div>
+                                <div class="form-text">Task will run every specified number of hours</div>
+                            </div>
+                            <div class="mb-3">
+                                <label for="start_minute" class="form-label">Start at Minute</label>
+                                <select class="form-select" id="start_minute" name="start_minute">
+                                    {% for i in range(0, 60, 5) %}
+                                    <option value="{{ i }}">:{{ '%02d'|format(i) }}</option>
+                                    {% endfor %}
+                                </select>
+                                <div class="form-text">Choose which minute of the hour the task should run</div>
+                            </div>
+                        </div>
+
+                        <!-- Daily Schedule Interface -->
+                        <div id="daily_schedule" class="schedule-interface" style="display: none;">
+                            <div class="mb-3">
+                                <label for="daily_time" class="form-label">Time of Day</label>
+                                <input type="time" class="form-control" id="daily_time" name="daily_time" value="09:00">
+                                <div class="form-text">Task will run once every day at this time</div>
+                            </div>
+                        </div>
+
+                        <!-- Weekly Schedule Interface -->
+                        <div id="weekly_schedule" class="schedule-interface" style="display: none;">
+                            <div class="mb-3">
+                                <label class="form-label">Days of Week</label>
+                                <div class="btn-group d-flex flex-wrap gap-2" role="group">
+                                    {% for day in ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] %}
+                                    <input type="checkbox" class="btn-check" name="weekdays" id="day_{{ loop.index }}" value="{{ loop.index }}">
+                                    <label class="btn btn-outline-primary" for="day_{{ loop.index }}">{{ day }}</label>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                            <div class="mb-3">
+                                <label for="weekly_time" class="form-label">Time of Day</label>
+                                <input type="time" class="form-control" id="weekly_time" name="weekly_time" value="09:00">
+                                <div class="form-text">Task will run on selected days at this time</div>
+                            </div>
+                        </div>
+                        
+                        <!-- Advanced Schedule Interface -->
+                        <div id="advanced_schedule" class="schedule-interface" style="display: none;">
+                            <div class="mb-3">
+                                <label for="cron" class="form-label">Cron Expression</label>
+                                <input type="text" class="form-control" id="cron" name="cron" 
+                                       placeholder="* * * * *" value="{{ task.schedule|default('') }}">
+                                <div class="form-text">
+                                    Format: minute hour day-of-month month day-of-week
+                                    <a href="#" data-bs-toggle="modal" data-bs-target="#cronHelpModal">Need help?</a>
+                                </div>
+                            </div>
+                        </div>
+
+                        <input type="hidden" id="schedule" name="schedule" value="">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Input Block -->
+        <div class="card mb-4">
+            <div class="card-header bg-primary text-white">
+                <h5 class="card-title mb-0">Input Block</h5>
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <label for="input_block" class="form-label">Select Input Block</label>
+                    <select class="form-select" id="input_block" name="input_block" required onchange="loadBlockParameters(this, 'input')">
+                        <option value="">Choose an input block...</option>
+                        {% for name, block in input_blocks.items() %}
+                        <option value="{{ name }}" {% if task and task.input_block == name %}selected{% endif %}>
+                            {{ block().name }} - {{ block().description }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="mb-3">
+                    <label for="target_url" class="form-label">Target URL</label>
+                    <input type="url" class="form-control" id="target_url" name="target_url" value="{{ task.target_url|default('') }}" required>
+                </div>
+                <div id="input_parameters"></div>
+            </div>
+        </div>
+
+        <!-- Processing Chains -->
+        <div id="processing_chains">
+            <!-- Processing chains will be added here dynamically -->
+        </div>
+
+        <div class="mb-4">
+            <button type="button" class="btn btn-success" onclick="addProcessingChain()">
+                <i class="fas fa-plus me-1"></i>Add Processing Chain
+            </button>
+        </div>
+
+        <div class="mb-4">
+            <button type="submit" class="btn btn-primary">{{ task.id|default(false) and 'Save Changes' or 'Create Task' }}</button>
+            <a href="{{ url_for('tasks') }}" class="btn btn-secondary">Cancel</a>
+        </div>
+
+        <!-- Hidden inputs for block chain data -->
+        <input type="hidden" id="blockChainData" name="block_chain_data">
+    </form>
+</div>
+
+<template id="processing_chain_template">
+    <div class="card mb-4 processing-chain" data-chain-id="">
+        <div class="card-header bg-purple text-white d-flex justify-content-between align-items-center">
+            <h5 class="card-title mb-0">Processing Chain</h5>
+            <button type="button" class="btn btn-sm btn-light" onclick="removeProcessingChain(this)">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        <div class="card-body">
+            <div class="processing-blocks">
+                <!-- Processing blocks will be added here -->
+            </div>
+            <button type="button" class="btn btn-outline-primary btn-sm mt-3" onclick="addProcessingBlock(this)">
+                <i class="fas fa-plus me-1"></i>Add Processing Block
+            </button>
+            
+            <!-- Action Block Section -->
+            <div class="action-block-section mt-4">
+                <h6 class="text-success">Action Block (Optional)</h6>
+                <div class="card">
+                    <div class="card-body">
+                        <select class="form-select" onchange="loadBlockParameters(this, 'action')">
+                            <option value="">Choose an action block...</option>
+                            {% for name, block in action_blocks.items() %}
+                            <option value="{{ name }}">{{ block().name }} - {{ block().description }}</option>
+                            {% endfor %}
+                        </select>
+                        <div class="block-parameters mt-3"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</template>
+
+<template id="processing_block_template">
+    <div class="card mb-3 processing-block" data-block-id="">
+        <div class="card-body">
+            <div class="d-flex justify-content-between align-items-start mb-3">
+                <div class="flex-grow-1">
+                    <select class="form-select" onchange="loadBlockParameters(this, 'processing')">
+                        <option value="">Choose a processing block...</option>
+                        {% for name, block in processing_blocks.items() %}
+                        <option value="{{ name }}">{{ block().name }} - {{ block().description }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <button type="button" class="btn btn-sm btn-danger ms-2" onclick="removeProcessingBlock(this)">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="block-parameters"></div>
+        </div>
+    </div>
+</template>
+
+<style>
+.bg-purple {
+    background-color: #9c27b0;
+}
+
+.processing-block {
+    border: 1px solid #dee2e6;
+    box-shadow: none;
+}
+
+.processing-block:hover {
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.action-block-section {
+    border-top: 1px solid #dee2e6;
+    padding-top: 1rem;
+}
+
+.action-block-section .card {
+    border: 1px solid #a5d6a7;
+    background-color: #f8fff9;
+}
+
+.action-block-section h6 {
+    color: #2e7d32;
+    margin-bottom: 1rem;
+}
+</style>
+
+<script>
+let chainCounter = 0;
+let blockCounter = 0;
+
+function addProcessingChain() {
+    const template = document.getElementById('processing_chain_template');
+    const container = document.getElementById('processing_chains');
+    const clone = template.content.cloneNode(true);
+    
+    // Set unique chain ID
+    const chainId = `chain_${++chainCounter}`;
+    clone.querySelector('.processing-chain').dataset.chainId = chainId;
+    
+    container.appendChild(clone);
+}
+
+function removeProcessingChain(button) {
+    button.closest('.processing-chain').remove();
+}
+
+function addProcessingBlock(button) {
+    const template = document.getElementById('processing_block_template');
+    const container = button.previousElementSibling;
+    const clone = template.content.cloneNode(true);
+    
+    // Set unique block ID
+    const blockId = `block_${++blockCounter}`;
+    clone.querySelector('.processing-block').dataset.blockId = blockId;
+    
+    container.appendChild(clone);
+}
+
+function removeProcessingBlock(button) {
+    button.closest('.processing-block').remove();
+}
+
+async function loadBlockParameters(select, blockType) {
+    if (!select.value) return;
+    
+    try {
+        const response = await fetch(`/api/blocks/${blockType}/${select.value}/parameters`, {
+            headers: {
+                'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').content
+            }
+        });
+        if (!response.ok) throw new Error('Failed to load parameters');
+        
+        const parameters = await response.json();
+        let container;
+        
+        if (blockType === 'input') {
+            container = document.getElementById('input_parameters');
+        } else {
+            // For both processing and action blocks, find the closest block-parameters div
+            container = select.closest('.card-body').querySelector('.block-parameters');
+        }
+        
+        if (!container) {
+            console.error('Could not find parameters container');
+            return;
+        }
+        
+        container.innerHTML = '';
+        
+        for (const [name, config] of Object.entries(parameters)) {
+            const formGroup = document.createElement('div');
+            formGroup.className = 'mb-3';
+            
+            const label = document.createElement('label');
+            label.className = 'form-label';
+            label.textContent = config.description;
+            
+            let input;
+            if (config.type === 'boolean') {
+                input = document.createElement('div');
+                input.className = 'form-check';
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.className = 'form-check-input';
+                checkbox.name = `${blockType}_param_${select.value}_${name}`;
+                checkbox.checked = config.default || false;
+                input.appendChild(checkbox);
+            } else if ((name === 'template' && select.value === 'json_transformer') || 
+                      (name === 'body_template' && select.value === 'email_sender')) {
+                // Special handling for JSON template and email body template parameters
+                input = document.createElement('textarea');
+                input.className = name === 'body_template' ? 'form-control email-body-template' : 'form-control font-monospace';
+                input.name = `${blockType}_param_${select.value}_${name}`;
+                input.value = config.default || '';
+                input.required = config.required;
+                input.rows = 10;
+                input.style.fontSize = '14px';
+
+                if (name === 'body_template') {
+                    input.placeholder = `<h2>{{title}}</h2>
+<p>Location: {{location}}</p>
+<p>{{description}}</p>
+<hr>
+<p><small>Posted on: {{posted_on}}</small></p>
+<p><a href="{{url}}">View Original</a></p>`;
+
+                    // Add help text for email template
+                    const helpText = document.createElement('div');
+                    helpText.className = 'template-help';
+                    helpText.innerHTML = `
+                        <strong>Template Guide:</strong>
+                        <ul class="mb-0">
+                            <li>Use {{field}} to insert data from the input (e.g., {{title}}, {{description}})</li>
+                            <li>Supports HTML formatting for rich email content</li>
+                            <li>Common fields: title, description, url, location, posted_on</li>
+                        </ul>
+                    `;
+                    formGroup.appendChild(helpText);
+                } else {
+                    // JSON transformer template help text
+                    input.placeholder = `{
+    "title": "{%raw%}{{input.title}}{%endraw%}",
+    "description": "{%raw%}{{input.description}}{%endraw%}",
+    "date": "{%raw%}{{input.posted_on}}{%endraw%}",
+    "custom_message": "New item posted: {%raw%}{{input.title}}{%endraw%}"
+}`;
+                    const helpText = document.createElement('div');
+                    helpText.className = 'form-text text-muted mt-2';
+                    helpText.innerHTML = `
+                        <small>
+                            <i class="fas fa-info-circle me-1"></i>
+                            Use <code>{%raw%}{{input.field}}{%endraw%}</code> syntax to reference input fields.
+                            The template must be valid JSON.
+                        </small>
+                    `;
+                    formGroup.appendChild(helpText);
+                }
+            } else {
+                input = document.createElement('input');
+                input.type = config.type === 'integer' ? 'number' : 'text';
+                input.className = 'form-control';
+                input.name = `${blockType}_param_${select.value}_${name}`;
+                input.value = config.default || '';
+                input.required = config.required;
+            }
+            
+            formGroup.appendChild(label);
+            formGroup.appendChild(input);
+            container.appendChild(formGroup);
+        }
+    } catch (error) {
+        console.error('Error loading parameters:', error);
+        alert('Failed to load block parameters');
+    }
+}
+
+function handleSubmit(e) {
+    e.preventDefault();
+    
+    // Build block chain data
+    const chains = [];
+    
+    // Get all processing chains
+    document.querySelectorAll('.processing-chain').forEach(chain => {
+        const chainBlocks = [];
+        
+        // Get all processing blocks in this chain
+        chain.querySelectorAll('.processing-block select').forEach(select => {
+            if (select.value) {
+                chainBlocks.push({
+                    type: 'processing',
+                    name: select.value
+                });
+            }
+        });
+        
+        // Get action block for this chain
+        const actionSelect = chain.querySelector('.action-block-section select');
+        if (actionSelect && actionSelect.value) {
+            chainBlocks.push({
+                type: 'action',
+                name: actionSelect.value
+            });
+        }
+        
+        // Only add chains that have at least one block
+        if (chainBlocks.length > 0) {
+            chains.push(chainBlocks);
+        }
+    });
+    
+    // Store block chain data
+    document.getElementById('blockChainData').value = JSON.stringify({ chains });
+    
+    // Submit the form
+    document.getElementById('taskForm').submit();
+}
+
+// Handle form submission
+document.getElementById('taskForm').addEventListener('submit', handleSubmit);
+
+// Initialize existing task data if in edit mode
+{% if task and task.id %}
+document.addEventListener('DOMContentLoaded', function() {
+    const taskData = {
+        blockChain: {{ task.get_block_chain()|tojson|safe }},
+        parameters: {{ parameters|tojson|safe }}
+    };
+    
+    // Load input block parameters
+    if (taskData.parameters.input) {
+        loadBlockParameters(document.getElementById('input_block'), 'input').then(() => {
+            // Set parameter values after they're loaded
+            for (const [name, value] of Object.entries(taskData.parameters.input)) {
+                const input = document.querySelector(`[name="input_param_{{ task.input_block }}_${name}"]`);
+                if (input) {
+                    if (input.type === 'checkbox') {
+                        input.checked = value;
+                    } else {
+                        input.value = value;
+                    }
+                }
+            }
+        });
+    }
+    
+    // Group blocks by chain
+    const chains = [];
+    let currentChain = [];
+    
+    // Group blocks into chains (each action block marks the end of a chain)
+    taskData.blockChain.forEach(block => {
+        currentChain.push(block);
+        if (block.type === 'action') {
+            chains.push([...currentChain]);
+            currentChain = [];
+        }
+    });
+    
+    // If there's a chain without an action block, add it too
+    if (currentChain.length > 0) {
+        chains.push(currentChain);
+    }
+    
+    // Create chains in the UI
+    chains.forEach(chain => {
+        addProcessingChain();
+        const chainElement = document.querySelector('.processing-chain:last-child');
+        
+        // Add blocks to the chain
+        chain.forEach((block, index) => {
+            if (block.type === 'processing') {
+                const addButton = chainElement.querySelector('.btn-outline-primary');
+                addProcessingBlock(addButton);
+                
+                const blockElement = chainElement.querySelector('.processing-block:last-child');
+                const select = blockElement.querySelector('select');
+                select.value = block.name;
+                
+                // Load and set parameters
+                loadBlockParameters(select, 'processing').then(() => {
+                    const blockParams = taskData.parameters.processing[block.name];
+                    if (blockParams) {
+                        for (const [name, value] of Object.entries(blockParams)) {
+                            const input = blockElement.querySelector(`[name="processing_param_${block.name}_${name}"]`);
+                            if (input) {
+                                if (input.type === 'checkbox') {
+                                    input.checked = value;
+                                } else {
+                                    input.value = value;
+                                }
+                            }
+                        }
+                    }
+                });
+            } else if (block.type === 'action') {
+                const actionSelect = chainElement.querySelector('.action-block-section select');
+                actionSelect.value = block.name;
+                
+                // Load and set parameters
+                loadBlockParameters(actionSelect, 'action').then(() => {
+                    const actionParams = taskData.parameters.action[block.name];
+                    if (actionParams) {
+                        for (const [name, value] of Object.entries(actionParams)) {
+                            const input = chainElement.querySelector(`[name="action_param_${block.name}_${name}"]`);
+                            if (input) {
+                                if (input.type === 'checkbox') {
+                                    input.checked = value;
+                                } else {
+                                    input.value = value;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        });
+    });
+});
+{% endif %}
+
+function updateScheduleInterface() {
+    const scheduleType = document.getElementById('schedule_type').value;
+    const interfaces = ['hourly_schedule', 'daily_schedule', 'weekly_schedule', 'advanced_schedule'];
+    
+    // Hide all interfaces first
+    interfaces.forEach(id => {
+        document.getElementById(id).style.display = 'none';
+    });
+    
+    // Show selected interface
+    if (scheduleType !== 'manual') {
+        document.getElementById(scheduleType + '_schedule').style.display = 'block';
+    }
+}
+
+function generateSchedule() {
+    const scheduleType = document.getElementById('schedule_type').value;
+    let schedule = '';
+    
+    if (scheduleType === 'hourly') {
+        const interval = document.getElementById('hours_interval').value;
+        const minute = document.getElementById('start_minute').value;
+        if (interval === '1') {
+            schedule = `${minute} * * * *`; // Every hour at specified minute
+        } else {
+            schedule = `${minute} */${interval} * * *`; // Every X hours at specified minute
+        }
+    } else if (scheduleType === 'daily') {
+        const time = document.getElementById('daily_time').value.split(':');
+        schedule = `${time[1]} ${time[0]} * * *`; // Every day at specified time
+    } else if (scheduleType === 'weekly') {
+        const time = document.getElementById('weekly_time').value.split(':');
+        const selectedDays = Array.from(document.querySelectorAll('input[name="weekdays"]:checked'))
+            .map(cb => cb.value)
+            .join(',');
+        schedule = selectedDays ? `${time[1]} ${time[0]} * * ${selectedDays}` : ''; // Selected days at specified time
+    } else if (scheduleType === 'advanced') {
+        schedule = document.getElementById('cron').value;
+    }
+    
+    document.getElementById('schedule').value = schedule;
+    return schedule !== '' || scheduleType === 'manual';
+}
+
+// Add form submit handler
+document.getElementById('taskForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    if (generateSchedule()) {
+        this.submit();
+    } else {
+        alert('Please select at least one day of the week for weekly schedule.');
+    }
+});
+
+// Initialize interface on page load
+document.addEventListener('DOMContentLoaded', function() {
+    {% if task and task.schedule %}
+    // Try to detect and set the schedule type based on existing schedule
+    const schedule = "{{ task.schedule|default('') }}";
+    if (schedule) {
+        const parts = schedule.split(' ');
+        if (parts.length === 5) {
+            if (parts[1].includes('*/')) {
+                // Hourly interval
+                document.getElementById('schedule_type').value = 'hourly';
+                document.getElementById('start_minute').value = parts[0];
+                document.getElementById('hours_interval').value = parts[1].replace('*/', '');
+            } else if (parts[3] === '*' && parts[4] === '*') {
+                // Daily schedule
+                document.getElementById('schedule_type').value = 'daily';
+                document.getElementById('daily_time').value = 
+                    `${parts[1].padStart(2, '0')}:${parts[0].padStart(2, '0')}`;
+            } else if (parts[4].includes(',') || /^\d+$/.test(parts[4])) {
+                // Weekly schedule
+                document.getElementById('schedule_type').value = 'weekly';
+                document.getElementById('weekly_time').value = 
+                    `${parts[1].padStart(2, '0')}:${parts[0].padStart(2, '0')}`;
+                const days = parts[4].split(',');
+                days.forEach(day => {
+                    const checkbox = document.querySelector(`input[name="weekdays"][value="${day}"]`);
+                    if (checkbox) checkbox.checked = true;
+                });
+            } else {
+                // Advanced cron
+                document.getElementById('schedule_type').value = 'advanced';
+                document.getElementById('cron').value = schedule;
+            }
+            updateScheduleInterface();
+        }
+    }
+    {% endif %}
+});
+</script>
+
+<!-- Cron Help Modal -->
+<div class="modal fade" id="cronHelpModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Cron Expression Help</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <h6>Format</h6>
+                <p><code>* * * * *</code> = minute hour day-of-month month day-of-week</p>
+                
+                <h6>Special Characters</h6>
+                <table class="table table-sm">
+                    <tr><td><code>*</code></td><td>Any value</td></tr>
+                    <tr><td><code>,</code></td><td>Value list separator</td></tr>
+                    <tr><td><code>-</code></td><td>Range of values</td></tr>
+                    <tr><td><code>/</code></td><td>Step values</td></tr>
+                </table>
+
+                <h6>Examples</h6>
+                <table class="table table-striped">
+                    <thead>
+                        <tr>
+                            <th>Expression</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>0 * * * *</code></td>
+                            <td>Every hour at minute 0</td>
+                        </tr>
+                        <tr>
+                            <td><code>*/15 * * * *</code></td>
+                            <td>Every 15 minutes</td>
+                        </tr>
+                        <tr>
+                            <td><code>0 */4 * * *</code></td>
+                            <td>Every 4 hours at minute 0</td>
+                        </tr>
+                        <tr>
+                            <td><code>0 9 * * *</code></td>
+                            <td>Every day at 9:00 AM</td>
+                        </tr>
+                        <tr>
+                            <td><code>0 9 * * 1-5</code></td>
+                            <td>Every weekday at 9:00 AM</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %} 

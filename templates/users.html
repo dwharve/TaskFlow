@@ -1,0 +1,502 @@
+{% extends "base.html" %}
+
+{% block head %}
+<style>
+    .alert-container {
+        position: fixed;
+        top: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 1050;
+        min-width: 300px;
+        max-width: 500px;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="alert-container"></div>
+<div class="container mt-4">
+    <div class="row mb-4">
+        <div class="col">
+            <h2>User Management</h2>
+        </div>
+        {% if current_user.is_admin %}
+        <div class="col text-end">
+            <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#createUserModal">
+                <i class="fas fa-user-plus"></i> Create User
+            </button>
+        </div>
+        {% endif %}
+    </div>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    <div class="card">
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-hover">
+                    <thead>
+                        <tr>
+                            <th>Username</th>
+                            <th>Email</th>
+                            <th>Role</th>
+                            <th>Status</th>
+                            <th>Last Login</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for user in users %}
+                        <tr data-user-id="{{ user.id }}">
+                            <td class="user-username">{{ user.username }}</td>
+                            <td class="user-email">{{ user.email }}</td>
+                            <td>
+                                <span class="badge user-role {% if user.is_admin %}bg-danger{% else %}bg-primary{% endif %}">
+                                    {% if user.is_admin %}Admin{% else %}User{% endif %}
+                                </span>
+                            </td>
+                            <td>
+                                <span class="badge user-status {% if user.is_active %}bg-success{% else %}bg-secondary{% endif %}">
+                                    {% if user.is_active %}Active{% else %}Inactive{% endif %}
+                                </span>
+                            </td>
+                            <td class="user-last-login">{{ user.last_login|default('Never')|datetime if user.last_login else 'Never' }}</td>
+                            <td class="user-actions">
+                                {% if current_user.is_admin and user.id != current_user.id %}
+                                <div class="btn-group" role="group">
+                                    <button type="button" class="btn btn-sm btn-outline-primary" 
+                                            onclick="editUser('{{ user.id }}')">
+                                        <i class="fas fa-edit"></i>
+                                    </button>
+                                    {% if user.is_active %}
+                                    <button type="button" class="btn btn-sm btn-outline-warning" 
+                                            onclick="deactivateUser('{{ user.id }}')">
+                                        <i class="fas fa-user-slash"></i>
+                                    </button>
+                                    {% else %}
+                                    <button type="button" class="btn btn-sm btn-outline-success" 
+                                            onclick="activateUser('{{ user.id }}')">
+                                        <i class="fas fa-user-check"></i>
+                                    </button>
+                                    {% endif %}
+                                </div>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Create User Modal -->
+<div class="modal fade" id="createUserModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Create New User</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form id="createUserForm">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label for="username" class="form-label">Username</label>
+                        <input type="text" class="form-control" id="username" name="username" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="email" class="form-label">Email</label>
+                        <input type="email" class="form-control" id="email" name="email" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="password" class="form-label">Password</label>
+                        <input type="password" class="form-control" id="password" name="password" required>
+                    </div>
+                    <div class="mb-3 form-check">
+                        <input type="checkbox" class="form-check-input" id="is_admin" name="is_admin">
+                        <label class="form-check-label" for="is_admin">Admin User</label>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Create User</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Edit User Modal -->
+<div class="modal fade" id="editUserModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Edit User</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form id="editUserForm">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" id="edit_user_id" name="user_id">
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label for="edit_username" class="form-label">Username</label>
+                        <input type="text" class="form-control" id="edit_username" name="username" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="edit_email" class="form-label">Email</label>
+                        <input type="email" class="form-control" id="edit_email" name="email" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="edit_password" class="form-label">New Password (leave blank to keep current)</label>
+                        <input type="password" class="form-control" id="edit_password" name="password">
+                    </div>
+                    <div class="mb-3 form-check">
+                        <input type="checkbox" class="form-check-input" id="edit_is_admin" name="is_admin">
+                        <label class="form-check-label" for="edit_is_admin">Admin User</label>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save Changes</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Get CSRF token from meta tag
+    const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+
+    // Form validation
+    function validateEmail(email) {
+        const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        return re.test(email);
+    }
+
+    function validatePassword(password) {
+        return password.length >= 8;
+    }
+
+    function showError(message) {
+        const errorDiv = document.createElement('div');
+        errorDiv.className = 'alert alert-danger alert-dismissible fade show';
+        errorDiv.innerHTML = `
+            ${message}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        `;
+        document.querySelector('.alert-container').appendChild(errorDiv);
+        
+        // Auto-dismiss after 5 seconds
+        setTimeout(() => {
+            errorDiv.remove();
+        }, 5000);
+    }
+
+    function showSuccess(message) {
+        const successDiv = document.createElement('div');
+        successDiv.className = 'alert alert-success alert-dismissible fade show';
+        successDiv.innerHTML = `
+            ${message}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        `;
+        document.querySelector('.alert-container').appendChild(successDiv);
+        
+        // Auto-dismiss after 5 seconds
+        setTimeout(() => {
+            successDiv.remove();
+        }, 5000);
+    }
+
+    function updateUserRow(userId, userData) {
+        const row = document.querySelector(`tr[data-user-id="${userId}"]`);
+        if (!row) {
+            console.warn(`Row not found for user ${userId}`);
+            return;
+        }
+
+        // Helper function to safely update element content
+        function updateElement(selector, value, updateFn) {
+            const element = row.querySelector(selector);
+            if (element) {
+                updateFn(element, value);
+            } else {
+                console.warn(`Element ${selector} not found in row ${userId}`);
+            }
+        }
+
+        // Update username and email
+        updateElement('.user-username', userData.username, (el, val) => el.textContent = val);
+        updateElement('.user-email', userData.email, (el, val) => el.textContent = val);
+
+        // Update role badge
+        updateElement('.user-role', userData.is_admin, (el, isAdmin) => {
+            el.className = `badge ${isAdmin ? 'bg-danger' : 'bg-primary'}`;
+            el.textContent = isAdmin ? 'Admin' : 'User';
+        });
+
+        // Update status badge
+        updateElement('.user-status', userData.is_active, (el, isActive) => {
+            el.className = `badge ${isActive ? 'bg-success' : 'bg-secondary'}`;
+            el.textContent = isActive ? 'Active' : 'Inactive';
+        });
+
+        // Update last login
+        updateElement('.user-last-login', userData.last_login, (el, lastLogin) => {
+            el.textContent = lastLogin || 'Never';
+        });
+
+        // Update action buttons
+        updateElement('.user-actions', userData, (el, data) => {
+            el.innerHTML = `
+                <div class="btn-group" role="group">
+                    <button type="button" class="btn btn-sm btn-outline-primary" 
+                            onclick="editUser('${userId}')">
+                        <i class="fas fa-edit"></i>
+                    </button>
+                    ${data.is_active ? 
+                        `<button type="button" class="btn btn-sm btn-outline-warning" 
+                                onclick="deactivateUser('${userId}')">
+                            <i class="fas fa-user-slash"></i>
+                        </button>` :
+                        `<button type="button" class="btn btn-sm btn-outline-success" 
+                                onclick="activateUser('${userId}')">
+                            <i class="fas fa-user-check"></i>
+                        </button>`
+                    }
+                </div>`;
+        });
+    }
+
+    async function editUser(userId) {
+        try {
+            const response = await fetch(`/api/users/${userId}`, {
+                headers: {
+                    'X-CSRF-TOKEN': csrfToken
+                }
+            });
+            
+            if (!response.ok) {
+                throw new Error('Failed to fetch user data');
+            }
+
+            const userData = await response.json();
+            
+            // Populate edit form
+            document.getElementById('edit_user_id').value = userData.id;
+            document.getElementById('edit_username').value = userData.username;
+            document.getElementById('edit_email').value = userData.email;
+            document.getElementById('edit_is_admin').checked = userData.is_admin;
+            
+            // Show edit modal
+            const editModal = new bootstrap.Modal(document.getElementById('editUserModal'));
+            editModal.show();
+        } catch (error) {
+            showError('Error fetching user data: ' + error.message);
+        }
+    }
+
+    async function deactivateUser(userId) {
+        if (!confirm('Are you sure you want to deactivate this user?')) {
+            return;
+        }
+
+        try {
+            const response = await fetch(`/users/${userId}/deactivate`, {
+                method: 'POST',
+                headers: {
+                    'X-CSRF-TOKEN': csrfToken,
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to deactivate user');
+            }
+
+            // Get updated user data
+            const userResponse = await fetch(`/api/users/${userId}`, {
+                headers: {
+                    'X-CSRF-TOKEN': csrfToken
+                }
+            });
+            
+            if (!userResponse.ok) {
+                throw new Error('Failed to fetch updated user data');
+            }
+
+            const userData = await userResponse.json();
+            updateUserRow(userId, userData);
+            showSuccess('User deactivated successfully');
+        } catch (error) {
+            showError('Error deactivating user: ' + error.message);
+        }
+    }
+
+    async function activateUser(userId) {
+        try {
+            const response = await fetch(`/users/${userId}/activate`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': csrfToken
+                }
+            });
+            
+            if (!response.ok) {
+                const data = await response.json();
+                throw new Error(data.error || 'Failed to activate user');
+            }
+
+            // Get updated user data
+            const userResponse = await fetch(`/api/users/${userId}`, {
+                headers: {
+                    'X-CSRF-TOKEN': csrfToken
+                }
+            });
+            
+            if (!userResponse.ok) {
+                throw new Error('Failed to fetch updated user data');
+            }
+
+            const userData = await userResponse.json();
+            updateUserRow(userId, userData);
+            showSuccess('User activated successfully');
+        } catch (error) {
+            showError('Error activating user: ' + error.message);
+        }
+    }
+
+    // Form submission handlers
+    document.getElementById('createUserForm').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        
+        const formData = new FormData(this);
+        const username = formData.get('username');
+        const email = formData.get('email');
+        const password = formData.get('password');
+        const isAdmin = formData.get('is_admin') === 'on';
+
+        if (!validateEmail(email)) {
+            showError('Please enter a valid email address');
+            return;
+        }
+
+        if (!validatePassword(password)) {
+            showError('Password must be at least 8 characters long');
+            return;
+        }
+
+        try {
+            const response = await fetch('/users/create', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': csrfToken
+                },
+                body: JSON.stringify({
+                    username,
+                    email,
+                    password,
+                    is_admin: isAdmin
+                })
+            });
+
+            if (!response.ok) {
+                const data = await response.json();
+                throw new Error(data.error || 'Failed to create user');
+            }
+
+            // Close modal and reset form
+            const modal = bootstrap.Modal.getInstance(document.getElementById('createUserModal'));
+            modal.hide();
+            this.reset();
+
+            // Reload the page to show the new user
+            // In a future update, we could add the new user to the table dynamically
+            window.location.reload();
+        } catch (error) {
+            showError('Error creating user: ' + error.message);
+        }
+    });
+
+    document.getElementById('editUserForm').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        
+        const formData = new FormData(this);
+        const userId = formData.get('user_id');
+        const username = formData.get('username');
+        const email = formData.get('email');
+        const password = formData.get('password');
+        const isAdmin = formData.get('is_admin') === 'on';
+
+        if (!validateEmail(email)) {
+            showError('Please enter a valid email address');
+            return;
+        }
+
+        if (password && !validatePassword(password)) {
+            showError('Password must be at least 8 characters long');
+            return;
+        }
+
+        try {
+            const response = await fetch(`/users/${userId}/edit`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': csrfToken
+                },
+                body: JSON.stringify({
+                    username,
+                    email,
+                    password: password || undefined,
+                    is_admin: isAdmin
+                })
+            });
+
+            if (!response.ok) {
+                const data = await response.json();
+                throw new Error(data.error || 'Failed to update user');
+            }
+
+            // Get updated user data
+            const userResponse = await fetch(`/api/users/${userId}`, {
+                headers: {
+                    'X-CSRF-TOKEN': csrfToken
+                }
+            });
+            
+            if (!userResponse.ok) {
+                throw new Error('Failed to fetch updated user data');
+            }
+
+            const userData = await userResponse.json();
+            
+            // Close modal
+            const modal = bootstrap.Modal.getInstance(document.getElementById('editUserModal'));
+            modal.hide();
+
+            // Update the user row
+            updateUserRow(userId, userData);
+            showSuccess('User updated successfully');
+        } catch (error) {
+            showError('Error updating user: ' + error.message);
+        }
+    });
+</script>
+{% endblock %} 

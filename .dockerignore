@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual Environment
+.env
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# SQLite Database files
+*.db
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# Local development
+instance/
+.git/
+.gitignore
+README.md
+Dockerfile
+docker-compose*.yml
+
+# Node modules (if any)
+node_modules/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/ 
