@@ -29,7 +29,7 @@ class User(UserMixin, db.Model):
         return check_password_hash(self.password_hash, password)
     
     def update_last_login(self):
-        from app import session_scope
+        from database import session_scope
         with session_scope() as session:
             self.last_login = datetime.utcnow()
             session.merge(self)
@@ -46,24 +46,24 @@ class User(UserMixin, db.Model):
     
     @staticmethod
     def get_all_users():
-        from app import session_scope
+        from database import session_scope
         with session_scope() as session:
             return session.query(User).all()
     
     @staticmethod
     def get_active_users():
-        from app import session_scope
+        from database import session_scope
         with session_scope() as session:
             return session.query(User).filter_by(is_active=True).all()
     
     def deactivate(self):
-        from app import session_scope
+        from database import session_scope
         with session_scope() as session:
             user = session.merge(self)
             user.is_active = False
     
     def activate(self):
-        from app import session_scope
+        from database import session_scope
         with session_scope() as session:
             user = session.merge(self)
             user.is_active = True
@@ -89,7 +89,7 @@ class Task(db.Model):
     
     def update_status(self, new_status):
         """Thread-safe status update with optimistic locking"""
-        from app import session_scope
+        from database import session_scope
         with session_scope() as session:
             task = session.merge(self)
             current_version = task.version
@@ -103,7 +103,7 @@ class Task(db.Model):
                 raise Exception("Task was modified by another transaction")
     
     def set_parameters(self, parameters):
-        from app import session_scope
+        from database import session_scope
         with session_scope() as session:
             task = session.merge(self)
             task.parameters = json.dumps(parameters)
@@ -112,7 +112,7 @@ class Task(db.Model):
         return json.loads(self.parameters) if self.parameters else {}
 
     def set_block_chain(self, blocks):
-        from app import session_scope
+        from database import session_scope
         with session_scope() as session:
             task = session.merge(self)
             task.block_chain = json.dumps(blocks)
@@ -121,7 +121,7 @@ class Task(db.Model):
         return json.loads(self.block_chain) if self.block_chain else []
 
     def set_block_data(self, data):
-        from app import session_scope
+        from database import session_scope
         with session_scope() as session:
             task = session.merge(self)
             task.block_data = json.dumps(data)
@@ -174,14 +174,14 @@ class Settings(db.Model):
 
     @staticmethod
     def get_setting(key, default=None):
-        from app import session_scope
+        from database import session_scope
         with session_scope() as session:
             setting = session.query(Settings).get(key)
             return setting.value if setting else default
 
     @staticmethod
     def set_setting(key, value):
-        from app import session_scope
+        from database import session_scope
         with session_scope() as session:
             setting = session.query(Settings).get(key)
             if setting:
@@ -197,7 +197,6 @@ class Settings(db.Model):
             else:
                 setting = Settings(key=key, value=value)
                 session.add(setting)
-            session.commit()
             return setting
 
 # Removed plugin registration code

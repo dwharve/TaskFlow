@@ -14,11 +14,11 @@ import secrets
 from flask_wtf import FlaskForm
 from wtforms import StringField, PasswordField
 from wtforms.validators import DataRequired, Length, EqualTo
-from contextlib import contextmanager
 
 from models import db, User, Task, Settings
 from blocks.manager import manager
 from scheduler import scheduler
+from database import session_scope
 
 # Initialize Flask app
 app = Flask(__name__)
