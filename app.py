@@ -16,64 +16,37 @@ from wtforms import StringField, PasswordField
 from wtforms.validators import DataRequired, Length, EqualTo
 import threading
 from sqlalchemy import inspect
-import sqlalchemy
 
 from models import db, User, Task, Settings
-from blocks.manager import manager
-from scheduler import scheduler
 from database import session_scope, get_session
 
 # Initialize Flask app
 app = Flask(__name__)
+
+# Get log level from environment
+log_level = os.environ.get('LOG_LEVEL', 'INFO')
+
+# Set up logging
+logging.basicConfig(
+    level=log_level,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    force=True  # Force reconfiguration of the root logger
+)
+logger = logging.getLogger(__name__)
+logger.info("Starting application")
+logger.info(f"Log level: {log_level}")
+
+# Set third-party loggers to warning level to reduce noise
+logging.getLogger('werkzeug').setLevel(logging.WARNING)
+logging.getLogger('sqlalchemy').setLevel(logging.WARNING)
+logging.getLogger('apscheduler').setLevel(logging.WARNING)
 
 @app.teardown_appcontext
 def remove_session(exception=None):
     """Remove the session at the end of the request"""
     session = get_session()
     session.remove()
-
-def generate_secret_key():
-    return secrets.token_hex(32)
-
-def initialize_secret_key():
-    """Initialize or retrieve the secret key from environment or database"""
-    # Try to get SECRET_KEY from environment
-    secret_key = os.environ.get('SECRET_KEY')
-    if secret_key:
-        return secret_key
-    
-    # Try to get from database
-    try:
-        with app.app_context():
-            with session_scope() as session:
-                # Check if setting exists
-                setting = session.query(Settings).filter_by(key='SECRET_KEY').first()
-                if setting:
-                    return setting.value
-                
-                # If no setting exists, create new one
-                secret_key = generate_secret_key()
-                new_setting = Settings(key='SECRET_KEY', value=secret_key)
-                session.add(new_setting)
-                return secret_key
-    except Exception as e:
-        logger.error(f"Error managing secret key: {str(e)}")
-        # If we can't access the database, generate a temporary key
-        # This allows the application to start, but the key will change on restart
-        return generate_secret_key()
-
-def init_db():
-    """Initialize the database only if it's new/empty"""
-    with app.app_context():
-        inspector = inspect(db.engine)
-        existing_tables = inspector.get_table_names()
-        
-        if not existing_tables:
-            # Only create tables if database is empty
-            logger.info("Initializing new database - creating tables")
-            db.create_all()
-            return True
-        return False
 
 # Configuration
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///database.db')
@@ -84,41 +57,65 @@ app.config['WTF_CSRF_ENABLED'] = True
 db.init_app(app)
 migrate = Migrate(app, db)
 
-# Initialize database and secret key
 with app.app_context():
+    # Create database if it doesn't exist
+    if not os.path.exists('instance/database.db'):
+        db.create_all()
+        logger.info("Created new database")
+    
     try:
-        # First check if we need to initialize the database
-        is_new_db = init_db()
+        # Check if the database needs to be migrated
+        inspector = inspect(db.engine)
         
-        # Now try to get or create secret key
-        secret_key = initialize_secret_key()
-        app.config['SECRET_KEY'] = secret_key
+        # Compare the current database schema with the models
+        current_metadata = db.Model.metadata
+        current_metadata.reflect(bind=db.engine)
         
+        # Get the list of tables from the models and database
+        expected_tables = set(current_metadata.tables.keys())
+        existing_tables = set(inspector.get_table_names())
+        
+        # Check for missing tables
+        if expected_tables - existing_tables:
+            logger.info(f"Missing tables detected: {expected_tables - existing_tables}")
+            migrate.upgrade()
+        else:
+            # Compare the columns for each table
+            needs_migration = False
+            for table in expected_tables:
+                expected_columns = {c.name for c in current_metadata.tables[table].columns}
+                existing_columns = {c['name'] for c in inspector.get_columns(table)}
+                
+                if expected_columns != existing_columns:
+                    logger.info(f"Schema mismatch in table {table}")
+                    logger.debug(f"Expected columns: {expected_columns}")
+                    logger.debug(f"Existing columns: {existing_columns}")
+                    needs_migration = True
+                    break
+            
+            if needs_migration:
+                logger.info("Running database migrations")
+                migrate.upgrade()
+    
     except Exception as e:
-        logger.error(f"Error during initialization: {str(e)}")
-        # Generate a temporary secret key to allow the app to start
-        app.config['SECRET_KEY'] = generate_secret_key()
-        # Re-raise the exception if it's not related to the secret key
-        if not isinstance(e, (sqlalchemy.exc.IntegrityError, sqlalchemy.exc.OperationalError)):
-            raise
+        logger.error(f"Error checking/applying migrations: {str(e)}", exc_info=True)
+        raise
+
+# Check if secret key is in database
+secret_key = Settings.get_setting('SECRET_KEY')
+if not secret_key:
+    secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
+    Settings.set_setting('SECRET_KEY', secret_key)
+
+app.config['SECRET_KEY'] = secret_key
+
+from blocks.manager import manager
+from scheduler import scheduler
 
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
 csrf = CSRFProtect(app)  # Initialize CSRF protection
-
-# Set up logging
-logging.basicConfig(
-    level=os.environ.get('LOG_LEVEL', 'INFO'),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-logger = logging.getLogger(__name__)
-
-# Set third-party loggers to WARNING to reduce noise
-logging.getLogger('werkzeug').setLevel(logging.WARNING)
-logging.getLogger('sqlalchemy').setLevel(logging.WARNING)
-logging.getLogger('apscheduler').setLevel(logging.WARNING)
 
 def admin_required(f):
     @wraps(f)
