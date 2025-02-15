@@ -128,7 +128,6 @@ class BlockManager:
         """
         logger.info(f"Executing block chain for task {task.id}")
         results = {}
-        parameters = task.get_parameters()
         
         # Execute input block
         input_block_class = self.get_block("input", task.input_block)
@@ -139,9 +138,17 @@ class BlockManager:
         
         logger.info(f"Executing input block: {task.input_block}")
         input_block = input_block_class()
+        
+        # Get parameters from the block itself
+        block_params = {}
+        for block in task.blocks:
+            if block.type == 'input' and block.name == task.input_block:
+                block_params = block.get_parameters()
+                break
+        
         results["input"] = await input_block.collect(
             task.target_url,
-            parameters.get("input", {})
+            block_params
         )
         logger.debug(f"Input block results: {len(results['input'])} items")
         
@@ -193,7 +200,7 @@ class BlockManager:
                 try:
                     if block_type == "processing":
                         # Add task_id to processing block parameters
-                        block_params = parameters.get("processing", {}).get(block_name, {}).copy()
+                        block_params = block.get_parameters()
                         block_params['task_id'] = task.id
                         
                         # Processing blocks work on lists of items
@@ -210,7 +217,7 @@ class BlockManager:
                             try:
                                 result = await block.execute(
                                     item,
-                                    parameters.get("action", {}).get(block_name, {})
+                                    block.get_parameters()
                                 )
                                 action_results.append(result)
                             except Exception as e:

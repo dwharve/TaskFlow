@@ -1,0 +1,202 @@
+.block-canvas-container {
+    position: relative;
+    width: calc(100% - 250px);  /* Leave space for toolbox */
+    margin-left: 250px;  /* Match toolbox width */
+    height: 600px;
+    overflow: hidden;
+    background: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    margin-bottom: 20px;
+    /* Add containment styles */
+    contain: strict;
+    -webkit-contain: strict;
+    /* Improve performance */
+    will-change: transform;
+    -webkit-font-smoothing: antialiased;
+}
+
+#blockCanvas {
+    position: absolute;
+    width: 5000px;
+    height: 5000px;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%) scale(1);
+    background-size: 20px 20px;
+    background-image: 
+        linear-gradient(to right, #e9ecef 1px, transparent 1px),
+        linear-gradient(to bottom, #e9ecef 1px, transparent 1px);
+    cursor: grab;
+    /* Optimize transform performance */
+    transform-origin: center center;
+    will-change: transform;
+    /* Remove transition for smoother panning */
+    /* Improve performance */
+    backface-visibility: hidden;
+    -webkit-backface-visibility: hidden;
+    /* Add GPU acceleration */
+    -webkit-transform-style: preserve-3d;
+    transform-style: preserve-3d;
+}
+
+/* Adjust grid size based on zoom */
+#blockCanvas[style*="scale"] {
+    background-size: calc(20px / var(--zoom, 1)) calc(20px / var(--zoom, 1));
+}
+
+/* Block styles - add transform-style for better zooming */
+.block-node {
+    position: absolute;
+    width: 200px;
+    background-color: white;
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    padding: 10px;
+    z-index: 1;
+    cursor: move;
+    transform-style: preserve-3d;
+    backface-visibility: hidden;
+    -webkit-backface-visibility: hidden;
+}
+
+.block-node.input-block {
+    background-color: #e3f2fd;
+    border-color: #90caf9;
+}
+
+.block-node.processing-block {
+    background-color: #f3e5f5;
+    border-color: #ce93d8;
+}
+
+.block-node.action-block {
+    background-color: #e8f5e9;
+    border-color: #a5d6a7;
+}
+
+.block-node .block-header {
+    margin: 0 0 10px 0;
+    padding-bottom: 5px;
+    border-bottom: 1px solid #dee2e6;
+}
+
+.block-node .block-type {
+    margin: 0;
+    font-size: 1rem;
+}
+
+.block-node .block-name {
+    font-size: 0.875rem;
+    color: #6c757d;
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.block-node .block-controls {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+}
+
+.block-node .block-controls button {
+    padding: 2px 5px;
+    font-size: 12px;
+}
+
+/* Toolbox styles */
+.block-toolbox {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 250px;
+    background: white;
+    padding: 10px;
+    border-right: 1px solid #dee2e6;
+    height: 100%;
+    overflow-y: auto;
+    z-index: 1000;
+}
+
+/* Endpoint styles */
+.endpoint {
+    z-index: 2;
+    width: 16px;
+    height: 16px;
+    background-color: #6c757d;
+    border-radius: 50%;
+    cursor: pointer;
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+}
+
+.endpoint.input {
+    left: -8px;
+    background-color: #007bff;
+}
+
+.endpoint.output {
+    right: -8px;
+    background-color: #28a745;
+}
+
+/* Add styles for jsPlumb endpoints */
+.jtk-endpoint {
+    z-index: 3;
+    cursor: pointer;
+}
+
+.jtk-endpoint.jtk-endpoint-anchor-left {
+    left: -8px !important;
+}
+
+.jtk-endpoint.jtk-endpoint-anchor-right {
+    right: -8px !important;
+}
+
+/* Hide the visual endpoint dots since jsPlumb will create its own */
+.endpoint {
+    display: none;
+}
+
+/* Connection styles */
+.connection-line {
+    position: absolute;
+    pointer-events: none;
+    z-index: 0;
+}
+
+.connection-line path {
+    stroke: #6c757d;
+    stroke-width: 2px;
+    fill: none;
+}
+
+/* Prevent text selection while dragging */
+.block-canvas-container * {
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+}
+
+/* Parameter styles */
+.block-params textarea.email-body-template {
+    font-family: monospace;
+    font-size: 14px;
+    min-height: 200px;
+    white-space: pre;
+    tab-size: 4;
+}
+
+.block-params .template-help {
+    font-size: 0.875rem;
+    color: #6c757d;
+    margin-top: 0.5rem;
+    padding: 0.5rem;
+    background-color: #f8f9fa;
+    border-radius: 4px;
+} 

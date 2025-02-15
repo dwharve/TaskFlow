@@ -12,11 +12,11 @@ class JsonTransformer(ProcessingBlock):
     
     @property
     def version(self) -> str:
-        return '1.0'
+        return '1.1'
     
     @property
     def description(self) -> str:
-        return 'Transform JSON objects by mapping fields and using templates with {{input.field}} syntax'
+        return 'Transform JSON objects by mapping fields and using templates with {{field}} syntax'
     
     @property
     def parameters(self) -> Dict[str, Dict[str, Any]]:
@@ -24,12 +24,12 @@ class JsonTransformer(ProcessingBlock):
             'template': {
                 'type': 'string',
                 'required': True,
-                'description': 'JSON template with {{input.field}} placeholders. Example: {"message":"{{input.title}} posted on {{input.date}}"}'
+                'description': 'JSON template with {{field}} placeholders. Example: {"message":"{{title}} posted on {{date}}"}'
             }
         }
 
     def _replace_placeholders(self, template: str, input_data: Dict[str, Any]) -> str:
-        """Replace {{input.field}} placeholders with actual values
+        """Replace {{field}} placeholders with actual values
         
         Args:
             template: String containing placeholders
@@ -39,19 +39,19 @@ class JsonTransformer(ProcessingBlock):
             String with placeholders replaced by values
         """
         def replace_match(match):
-            field = match.group(1)  # Extract field name from {{input.field}}
+            field = match.group(1)  # Extract field name from {{field}}
             try:
                 # Handle nested fields with dot notation
                 value = input_data
-                for key in field.split('.')[1:]:  # Skip 'input' prefix
+                for key in field.split('.'):
                     value = value[key]
                 return str(value)
             except (KeyError, TypeError):
                 print(f"Warning: Field {field} not found in input data")
                 return f"{{missing:{field}}}"
         
-        # Replace all {{input.field}} occurrences
-        pattern = r'\{\{(input\.[^}]+)\}\}'
+        # Replace all {{field}} occurrences
+        pattern = r'\{\{([^}]+)\}\}'
         return re.sub(pattern, replace_match, template)
 
     async def process(self, data: List[Dict[str, Any]], parameters: Dict[str, Any]) -> List[Dict[str, Any]]:

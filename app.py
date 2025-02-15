@@ -1,9 +1,8 @@
+import sys
 from flask import Flask, request, jsonify, render_template, redirect, url_for, flash
-from flask_sqlalchemy import SQLAlchemy
-from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
+from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from flask_migrate import Migrate
 from flask_wtf.csrf import CSRFProtect
-from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
 import os
 from datetime import datetime
@@ -16,15 +15,19 @@ from wtforms import StringField, PasswordField
 from wtforms.validators import DataRequired, Length, EqualTo
 import threading
 from sqlalchemy import inspect
+import flask_migrate
 
-from models import db, User, Task, Settings
+from models import db, User, Task, Settings, Block, BlockConnection
 from database import session_scope, get_session
+from executor import executor
 
 # Initialize Flask app
 app = Flask(__name__)
 
 # Get log level from environment
 log_level = os.environ.get('LOG_LEVEL', 'INFO')
+# Get log level from arguments
+log_level = sys.argv[1] if len(sys.argv) > 1 else log_level
 
 # Set up logging with pid and thread name
 logging.basicConfig(
@@ -58,16 +61,24 @@ db.init_app(app)
 migrate = Migrate(app, db)
 
 with app.app_context():
-    # Create database if it doesn't exist
-    if not os.path.exists('instance/database.db'):
-        db.create_all()
-        logger.info("Created new database")
-    
     try:
-        # Check if the database needs to be migrated
-        inspector = inspect(db.engine)
+        # Create database directory if it doesn't exist
+        os.makedirs('instance', exist_ok=True)
         
-        # Compare the current database schema with the models
+        # Initialize migrations directory if it doesn't exist
+        if not os.path.exists('migrations'):
+            logger.info("Initializing migrations directory")
+            migrate.init_app(app, db)
+            with app.app_context():
+                flask_migrate.init()
+        
+        # Create database if it doesn't exist
+        if not os.path.exists('instance/database.db'):
+            db.create_all()
+            logger.info("Created new database")
+        
+        # Check if any tables are missing and create them
+        inspector = inspect(db.engine)
         current_metadata = db.Model.metadata
         current_metadata.reflect(bind=db.engine)
         
@@ -75,30 +86,41 @@ with app.app_context():
         expected_tables = set(current_metadata.tables.keys())
         existing_tables = set(inspector.get_table_names())
         
+        # Check for missing tables or schema changes
+        needs_migration = False
+        
         # Check for missing tables
         if expected_tables - existing_tables:
             logger.info(f"Missing tables detected: {expected_tables - existing_tables}")
-            migrate.upgrade()
-        else:
-            # Compare the columns for each table
-            needs_migration = False
-            for table in expected_tables:
-                expected_columns = {c.name for c in current_metadata.tables[table].columns}
-                existing_columns = {c['name'] for c in inspector.get_columns(table)}
-                
-                if expected_columns != existing_columns:
-                    logger.info(f"Schema mismatch in table {table}")
-                    logger.debug(f"Expected columns: {expected_columns}")
-                    logger.debug(f"Existing columns: {existing_columns}")
-                    needs_migration = True
-                    break
+            needs_migration = True
+        
+        # Check for schema changes in existing tables
+        for table in existing_tables & expected_tables:
+            expected_columns = {c.name for c in current_metadata.tables[table].columns}
+            existing_columns = {c['name'] for c in inspector.get_columns(table)}
             
-            if needs_migration:
-                logger.info("Running database migrations")
-                migrate.upgrade()
+            if expected_columns != existing_columns:
+                logger.info(f"Schema mismatch in table {table}")
+                logger.debug(f"Expected columns: {expected_columns}")
+                logger.debug(f"Existing columns: {existing_columns}")
+                needs_migration = True
+                break
+        
+        if needs_migration:
+            logger.info("Generating and applying database migrations")
+            try:
+                # Generate migration
+                with app.app_context():
+                    flask_migrate.migrate()
+                    # Apply migration
+                    flask_migrate.upgrade()
+                logger.info("Database migrations applied successfully")
+            except Exception as e:
+                logger.error(f"Error applying migrations: {str(e)}", exc_info=True)
+                raise
     
     except Exception as e:
-        logger.error(f"Error checking/applying migrations: {str(e)}", exc_info=True)
+        logger.error(f"Error checking/creating tables: {str(e)}", exc_info=True)
         raise
 
 # Check if secret key is in database
@@ -446,109 +468,93 @@ def new_task():
             logger.info("Creating new task")
             logger.debug(f"Form data: {request.form}")
             
-            # Parse and validate parameters for each block
-            parameters = {
-                'input': {},
-                'processing': {},
-                'action': {}
-            }
-            
-            # Parse input block parameters
-            input_block = request.form['input_block']
-            input_params = {}
-            for key, value in request.form.items():
-                if key.startswith('input_param_'):
-                    param_name = key.replace('input_param_', '').replace(f"{input_block}_", '')
-                    input_params[param_name] = value
-            
-            logger.debug(f"Input parameters: {input_params}")
-            
-            # Validate input block parameters
-            logger.info(f"Validating input block: {input_block}")
-            parameters['input'] = validate_block_parameters(
-                input_block, 'input', input_params)
-            
-            # Parse block chain data
-            chains_data = json.loads(request.form['block_chain_data'])
-            logger.debug(f"Block chain data: {chains_data}")
-            
-            # Initialize final block chain
-            block_chain = []
-            
-            # Process each chain
-            for chain_index, chain in enumerate(chains_data.get('chains', [])):
-                logger.info(f"Processing chain {chain_index + 1}")
+            # Create task
+            with session_scope() as session:
+                task = Task(
+                    name=request.form['name'],
+                    user_id=current_user.id,
+                    schedule=request.form.get('schedule')
+                )
+                session.add(task)
+                session.flush()  # Get task ID
                 
-                # Add each block in the chain to the final block chain
-                for block in chain:
-                    block_type = block['type']
-                    block_name = block['name']
-                    logger.debug(f"Processing {block_type} block: {block_name}")
+                # Parse block data
+                blocks_data = json.loads(request.form['blocks_data'])
+                logger.debug(f"Blocks data: {blocks_data}")
+                
+                # Create blocks
+                blocks = {}  # id -> Block
+                for block_data in blocks_data['blocks']:
+                    block = Block(
+                        task_id=task.id,
+                        name=block_data['name'],
+                        type=block_data['type'],
+                        display_name=block_data.get('display_name'),
+                        position_x=block_data.get('position_x', 0),
+                        position_y=block_data.get('position_y', 0)
+                    )
                     
                     # Get parameters for this block
                     block_params = {}
-                    param_prefix = f'{block_type}_param_{block_name}_'
+                    param_prefix = f'{block.type}_param_{block.name}_'
                     for key, value in request.form.items():
                         if key.startswith(param_prefix):
                             param_name = key.replace(param_prefix, '')
                             block_params[param_name] = value
                     
-                    logger.debug(f"Block parameters: {block_params}")
+                    # Use block parameters directly from blocks_data
+                    if 'parameters' in block_data:
+                        block_params = block_data['parameters']
                     
                     # Validate parameters
-                    if block_type == 'processing':
-                        parameters['processing'][block_name] = validate_block_parameters(
-                            block_name, 'processing', block_params)
-                    elif block_type == 'action':
-                        if 'action' not in parameters:
-                            parameters['action'] = {}
-                        parameters['action'][block_name] = validate_block_parameters(
-                            block_name, 'action', block_params)
+                    block_params = validate_block_parameters(
+                        block.name, block.type, block_params)
+                    block.set_parameters(block_params)
                     
-                    # Add block to chain
-                    block_chain.append({
-                        'type': block_type,
-                        'name': block_name
-                    })
-            
-            logger.info("Creating task object")
-            logger.debug(f"Final block chain: {block_chain}")
-            logger.debug(f"Final parameters: {parameters}")
-            
-            with session_scope() as session:
-                task = Task(
-                    name=request.form['name'],
-                    user_id=current_user.id,
-                    input_block=input_block,
-                    target_url=request.form['target_url'],
-                    schedule=request.form.get('schedule')
-                )
+                    session.add(block)
+                    session.flush()  # Get block ID
+                    blocks[block_data['id']] = block
                 
-                # Set block chain first
-                task.block_chain = json.dumps(block_chain)
-                
-                # Add task to session
-                session.add(task)
-                
-                # Set parameters after task is added to session
-                task.parameters = json.dumps(parameters)
+                # Create connections
+                blocks_list = list(blocks.values())  # Convert blocks dict to list for indexing
+                for conn_data in blocks_data['connections']:
+                    source_index = int(conn_data['source'])
+                    target_index = int(conn_data['target'])
+                    
+                    if 0 <= source_index < len(blocks_list) and 0 <= target_index < len(blocks_list):
+                        conn = BlockConnection(
+                            source_block_id=blocks_list[source_index].id,
+                            target_block_id=blocks_list[target_index].id,
+                            input_name=conn_data.get('input_name')
+                        )
+                        session.add(conn)
+                    else:
+                        logger.error(f"Invalid connection indices: source={source_index}, target={target_index}, blocks_len={len(blocks_list)}")
                 
                 # Schedule the task if it has a schedule
                 if task.schedule:
                     logger.info(f"Scheduling task with schedule: {task.schedule}")
                     scheduler.schedule_task(task)
             
-            flash('Task created successfully.', 'success')
-            return redirect(url_for('tasks'))
+            # Return JSON response for AJAX request
+            return jsonify({
+                'status': 'success',
+                'message': 'Task created successfully',
+                'redirect': url_for('tasks')
+            })
             
         except ValueError as e:
             logger.error(f"Error creating task: {str(e)}")
-            flash(str(e), 'danger')
-            return redirect(url_for('new_task'))
+            return jsonify({
+                'status': 'error',
+                'error': str(e)
+            }), 400
         except Exception as e:
             logger.error(f"Unexpected error creating task: {str(e)}", exc_info=True)
-            flash('An unexpected error occurred.', 'danger')
-            return redirect(url_for('new_task'))
+            return jsonify({
+                'status': 'error',
+                'error': 'An unexpected error occurred.'
+            }), 500
     
     # GET request - show form
     return render_template('task_form.html',
@@ -571,105 +577,131 @@ def edit_task(task_id):
             logger.info(f"Editing task {task_id}")
             logger.debug(f"Form data: {request.form}")
             
-            # Parse and validate parameters for each block
-            parameters = {
-                'input': {},
-                'processing': {},
-                'action': {}
-            }
-            
-            # Parse input block parameters
-            input_params = {}
-            for key, value in request.form.items():
-                if key.startswith('input_param_'):
-                    param_name = key.replace('input_param_', '').replace(f"{task.input_block}_", '')
-                    input_params[param_name] = value
-            
-            logger.debug(f"Input parameters: {input_params}")
-            
-            # Validate input block parameters
-            input_block = request.form['input_block']
-            logger.info(f"Validating input block: {input_block}")
-            parameters['input'] = validate_block_parameters(
-                input_block, 'input', input_params)
-            
-            # Parse block chain data
-            chains_data = json.loads(request.form['block_chain_data'])
-            logger.debug(f"Block chain data: {chains_data}")
-            
-            # Initialize final block chain
-            block_chain = []
-            
-            # Process each chain
-            for chain_index, chain in enumerate(chains_data.get('chains', [])):
-                logger.info(f"Processing chain {chain_index + 1}")
+            with session_scope() as session:
+                task = session.get(Task, task_id)
                 
-                # Add each block in the chain to the final block chain
-                for block in chain:
-                    block_type = block['type']
-                    block_name = block['name']
-                    logger.debug(f"Processing {block_type} block: {block_name}")
+                # Update basic task info
+                task.name = request.form['name']
+                task.schedule = request.form.get('schedule')
+                
+                # Parse block data
+                blocks_data = json.loads(request.form['blocks_data'])
+                logger.debug(f"Blocks data: {blocks_data}")
+                
+                # Create a map of existing blocks by name and type
+                existing_blocks = {(block.name, block.type): block for block in task.blocks}
+                
+                # Track which blocks are still in use
+                used_blocks = set()
+                
+                # Update or create blocks
+                blocks = {}
+                for block_data in blocks_data['blocks']:
+                    block_key = (block_data['name'], block_data['type'])
                     
-                    # Get parameters for this block
-                    block_params = {}
-                    param_prefix = f'{block_type}_param_{block_name}_'
-                    for key, value in request.form.items():
-                        if key.startswith(param_prefix):
-                            param_name = key.replace(param_prefix, '')
-                            block_params[param_name] = value
+                    if block_key in existing_blocks:
+                        # Update existing block
+                        block = existing_blocks[block_key]
+                        block.display_name = block_data.get('display_name')
+                        block.position_x = block_data.get('position_x', 0)
+                        block.position_y = block_data.get('position_y', 0)
+                        used_blocks.add(block_key)
+                    else:
+                        # Create new block
+                        block = Block(
+                            task_id=task.id,
+                            name=block_data['name'],
+                            type=block_data['type'],
+                            display_name=block_data.get('display_name'),
+                            position_x=block_data.get('position_x', 0),
+                            position_y=block_data.get('position_y', 0)
+                        )
+                        session.add(block)
                     
-                    logger.debug(f"Block parameters: {block_params}")
+                    # Update parameters
+                    if 'parameters' in block_data:
+                        block_params = block_data['parameters']
+                        # Validate parameters
+                        block_params = validate_block_parameters(
+                            block.name, block.type, block_params)
+                        block.set_parameters(block_params)
                     
-                    # Validate parameters
-                    if block_type == 'processing':
-                        parameters['processing'][block_name] = validate_block_parameters(
-                            block_name, 'processing', block_params)
-                    elif block_type == 'action':
-                        parameters['action'][block_name] = validate_block_parameters(
-                            block_name, 'action', block_params)
+                    session.flush()  # Get block ID
+                    blocks[block_data['id']] = block
+                
+                # Remove blocks that are no longer used
+                for block_key, block in existing_blocks.items():
+                    if block_key not in used_blocks:
+                        session.delete(block)
+                
+                # Delete all existing connections
+                for block in task.blocks:
+                    for conn in block.inputs:
+                        session.delete(conn)
+                
+                # Create new connections
+                blocks_list = list(blocks.values())  # Convert blocks dict to list for indexing
+                for conn_data in blocks_data['connections']:
+                    source_index = int(conn_data['source'])
+                    target_index = int(conn_data['target'])
                     
-                    # Add block to chain
-                    block_chain.append({
-                        'type': block_type,
-                        'name': block_name
-                    })
+                    if 0 <= source_index < len(blocks_list) and 0 <= target_index < len(blocks_list):
+                        conn = BlockConnection(
+                            source_block_id=blocks_list[source_index].id,
+                            target_block_id=blocks_list[target_index].id,
+                            input_name=conn_data.get('input_name')
+                        )
+                        session.add(conn)
+                    else:
+                        logger.error(f"Invalid connection indices: source={source_index}, target={target_index}, blocks_len={len(blocks_list)}")
+                
+                # Update schedule
+                if task.schedule:
+                    logger.info(f"Updating schedule for task {task_id}: {task.schedule}")
+                    scheduler.schedule_task(task)
+                else:
+                    logger.info(f"Removing schedule for task {task_id}")
+                    scheduler.remove_task(task)
             
-            logger.info("Updating task")
-            # Update task
-            task.name = request.form['name']
-            task.input_block = input_block
-            task.target_url = request.form['target_url']
-            task.schedule = request.form.get('schedule')
-            
-            # Set block chain and parameters
-            logger.debug(f"Final block chain: {block_chain}")
-            logger.debug(f"Final parameters: {parameters}")
-            task.set_block_chain(block_chain)
-            task.set_parameters(parameters)
-            
-            db.session.commit()
-            logger.info(f"Task {task_id} updated successfully")
-            
-            # Update schedule
-            if task.schedule:
-                logger.info(f"Updating schedule for task {task_id}: {task.schedule}")
-                scheduler.schedule_task(task)
-            else:
-                logger.info(f"Removing schedule for task {task_id}")
-                scheduler.remove_task(task)
-            
-            flash('Task updated successfully.', 'success')
-            return redirect(url_for('tasks'))
+            # Return JSON response for AJAX request
+            return jsonify({
+                'status': 'success',
+                'message': 'Task updated successfully',
+                'redirect': url_for('tasks')
+            })
             
         except ValueError as e:
             logger.error(f"Error updating task {task_id}: {str(e)}")
-            flash(str(e), 'danger')
-            return redirect(url_for('edit_task', task_id=task_id))
+            return jsonify({
+                'status': 'error',
+                'error': str(e)
+            }), 400
+        except Exception as e:
+            logger.error(f"Unexpected error updating task {task_id}: {str(e)}", exc_info=True)
+            return jsonify({
+                'status': 'error',
+                'error': 'An unexpected error occurred.'
+            }), 500
     
     # GET request - show form
     return render_template('task_form.html',
         task=task,
-        parameters=task.get_parameters(),
+        blocks_data={
+            'blocks': [{
+                'id': block.id,
+                'name': block.name,
+                'type': block.type,
+                'parameters': block.get_parameters(),
+                'position_x': block.position_x,
+                'position_y': block.position_y,
+                'display_name': block.display_name or block.name
+            } for block in task.blocks],
+            'connections': [{
+                'source': conn.source_block_id,
+                'target': conn.target_block_id,
+                'input_name': conn.input_name
+            } for block in task.blocks for conn in block.inputs]
+        },
         input_blocks=manager.get_blocks_by_type('input'),
         processing_blocks=manager.get_blocks_by_type('processing'),
         action_blocks=manager.get_blocks_by_type('action')
@@ -683,9 +715,24 @@ def view_task(task_id):
         flash('Access denied.', 'danger')
         return redirect(url_for('tasks'))
     
+    # Organize parameters by block type
+    parameters = {
+        'input': {},
+        'processing': {},
+        'action': {}
+    }
+    
+    for block in task.blocks:
+        if block.type == 'input':
+            parameters['input'] = block.get_parameters()
+        elif block.type == 'processing':
+            parameters['processing'][block.name] = block.get_parameters()
+        elif block.type == 'action':
+            parameters['action'] = block.get_parameters()
+    
     return render_template('view_task.html',
         task=task,
-        parameters=task.get_parameters(),
+        parameters=parameters,
         block_chain=task.get_block_chain(),
         block_data=task.get_block_data()
     )
@@ -726,54 +773,8 @@ def run_in_thread(app, task_id):
                     logger.error(f"Task {task_id} not found")
                     return
 
-                async def execute_task():
-                    # Get task configuration
-                    input_block = manager.get_block("input", task.input_block)()
-                    block_chain = task.get_block_chain()
-                    parameters = task.get_parameters()
-                    
-                    # Execute input block
-                    input_data = await input_block.collect(task.target_url, parameters.get('input', {}))
-                    block_data = {"input": input_data}
-                    
-                    # Execute processing and action blocks
-                    current_data = input_data
-                    for block_config in block_chain:
-                        block_type = block_config['type']
-                        block_name = block_config['name']
-                        
-                        block = manager.get_block(block_type, block_name)()
-                        if block_type == "processing":
-                            block_params = parameters.get('processing', {}).get(block_name, {})
-                            block_params['task_id'] = task.id
-                            current_data = await block.process(current_data, block_params)
-                        elif block_type == "action":
-                            # Action blocks work on individual items
-                            action_results = []
-                            block_params = parameters.get('action', {}).get(block_name, {})
-                            for item in current_data:
-                                try:
-                                    result = await block.execute(item, block_params)
-                                    action_results.append(result)
-                                except Exception as e:
-                                    logger.error(f"Error executing action block {block_name} for item: {str(e)}")
-                                    action_results.append({
-                                        "error": str(e),
-                                        "item": item
-                                    })
-                            current_data = action_results
-                        
-                        if block_type not in block_data:
-                            block_data[block_type] = {}
-                        block_data[block_type][block_name] = current_data
-                    
-                    # Update task with results
-                    task.set_block_data(block_data)
-                    task.last_run = datetime.utcnow()
-                    task.update_status('completed')
-
                 # Run the async function
-                asyncio.run(execute_task())
+                asyncio.run(executor.execute_task(task))
                 
             except Exception as e:
                 logger.error(f"Error executing task {task_id}: {str(e)}")
@@ -877,6 +878,33 @@ def delete_task(task_id):
         except Exception as e:
             logger.error(f"Error deleting task {task_id}: {str(e)}")
             return jsonify({'error': 'Failed to delete task'}), 500
+
+@app.route('/api/tasks/<int:task_id>/blocks')
+@login_required
+def get_task_blocks(task_id):
+    """Get block data for a task"""
+    task = Task.query.get_or_404(task_id)
+    if task.user_id != current_user.id:
+        return jsonify({'error': 'Access denied'}), 403
+    
+    blocks_data = {
+        'blocks': [{
+            'id': block.id,
+            'name': block.name,
+            'type': block.type,
+            'parameters': block.get_parameters(),
+            'position_x': block.position_x,
+            'position_y': block.position_y,
+            'display_name': block.display_name or block.name
+        } for block in task.blocks],
+        'connections': [{
+            'source': conn.source_block_id,
+            'target': conn.target_block_id,
+            'input_name': conn.input_name
+        } for block in task.blocks for conn in block.inputs]
+    }
+    
+    return jsonify(blocks_data)
 
 if __name__ == '__main__':
     app.run(debug=True) 

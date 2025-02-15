@@ -1,0 +1,124 @@
+<!-- Hourly Schedule Interface -->
+<div id="hourly_schedule" class="schedule-interface" style="display: none;">
+    <div class="mb-3">
+        <label for="hours_interval" class="form-label">Run Every</label>
+        <div class="input-group">
+            <input type="number" class="form-control" id="hours_interval" name="hours_interval" 
+                   min="1" max="24" value="1">
+            <span class="input-group-text">hour(s)</span>
+        </div>
+        <div class="form-text">Task will run every specified number of hours</div>
+    </div>
+    <div class="mb-3">
+        <label for="start_minute" class="form-label">Start at Minute</label>
+        <select class="form-select" id="start_minute" name="start_minute">
+            {% for i in range(0, 60, 5) %}
+            <option value="{{ i }}">:{{ '%02d'|format(i) }}</option>
+            {% endfor %}
+        </select>
+        <div class="form-text">Choose which minute of the hour the task should run</div>
+    </div>
+</div>
+
+<!-- Daily Schedule Interface -->
+<div id="daily_schedule" class="schedule-interface" style="display: none;">
+    <div class="mb-3">
+        <label for="daily_time" class="form-label">Time of Day</label>
+        <input type="time" class="form-control" id="daily_time" name="daily_time" value="09:00">
+        <div class="form-text">Task will run once every day at this time</div>
+    </div>
+</div>
+
+<!-- Weekly Schedule Interface -->
+<div id="weekly_schedule" class="schedule-interface" style="display: none;">
+    <div class="mb-3">
+        <label class="form-label">Days of Week</label>
+        <div class="btn-group d-flex flex-wrap gap-2" role="group">
+            {% for day in ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] %}
+            <input type="checkbox" class="btn-check" name="weekdays" id="day_{{ loop.index }}" value="{{ loop.index }}">
+            <label class="btn btn-outline-primary" for="day_{{ loop.index }}">{{ day }}</label>
+            {% endfor %}
+        </div>
+    </div>
+    <div class="mb-3">
+        <label for="weekly_time" class="form-label">Time of Day</label>
+        <input type="time" class="form-control" id="weekly_time" name="weekly_time" value="09:00">
+        <div class="form-text">Task will run on selected days at this time</div>
+    </div>
+</div>
+
+<!-- Advanced Schedule Interface -->
+<div id="advanced_schedule" class="schedule-interface" style="display: none;">
+    <div class="mb-3">
+        <label for="cron" class="form-label">Cron Expression</label>
+        <input type="text" class="form-control" id="cron" name="cron" 
+               placeholder="* * * * *" value="{{ task.schedule|default('') }}">
+        <div class="form-text">
+            Format: minute hour day-of-month month day-of-week
+            <a href="#" data-bs-toggle="modal" data-bs-target="#cronHelpModal">Need help?</a>
+        </div>
+    </div>
+</div>
+
+<input type="hidden" id="schedule" name="schedule" value="{{ task.schedule|default('') }}">
+
+<!-- Cron Help Modal -->
+<div class="modal fade" id="cronHelpModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Cron Expression Help</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <h6>Format</h6>
+                <p><code>* * * * *</code> = minute hour day-of-month month day-of-week</p>
+                
+                <h6>Special Characters</h6>
+                <table class="table table-sm">
+                    <tr><td><code>*</code></td><td>Any value</td></tr>
+                    <tr><td><code>,</code></td><td>Value list separator</td></tr>
+                    <tr><td><code>-</code></td><td>Range of values</td></tr>
+                    <tr><td><code>/</code></td><td>Step values</td></tr>
+                </table>
+
+                <h6>Examples</h6>
+                <table class="table table-striped">
+                    <thead>
+                        <tr>
+                            <th>Expression</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>0 * * * *</code></td>
+                            <td>Every hour at minute 0</td>
+                        </tr>
+                        <tr>
+                            <td><code>*/15 * * * *</code></td>
+                            <td>Every 15 minutes</td>
+                        </tr>
+                        <tr>
+                            <td><code>0 */4 * * *</code></td>
+                            <td>Every 4 hours at minute 0</td>
+                        </tr>
+                        <tr>
+                            <td><code>0 9 * * *</code></td>
+                            <td>Every day at 9:00 AM</td>
+                        </tr>
+                        <tr>
+                            <td><code>0 9 * * 1-5</code></td>
+                            <td>Every weekday at 9:00 AM</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/schedule.js') }}"></script> 

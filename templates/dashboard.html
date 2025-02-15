@@ -166,10 +166,12 @@
                             <td>{{ task.name }}</td>
                             <td>
                                 <div class="block-chain-preview">
-                                    <span class="block input-block">{{ task.input_block }}</span>
-                                    {% for block in task.get_block_chain() %}
-                                    <span class="chain-arrow">→</span>
-                                    <span class="block {{ block.type }}-block">{{ block.name }}</span>
+                                    {% set blocks = task.get_block_chain() %}
+                                    {% for block in blocks %}
+                                        {% if not loop.first %}
+                                            <span class="chain-arrow">→</span>
+                                        {% endif %}
+                                        <span class="block {{ block.type }}-block">{{ block.name }}</span>
                                     {% endfor %}
                                 </div>
                             </td>
@@ -177,10 +179,10 @@
                             <td><span data-last-run>{{ task.last_run | datetime or 'Never' }}</span></td>
                             <td>
                                 <div class="btn-group">
-                                    <button onclick="runTask({{ task.id }})" class="btn btn-sm btn-success" title="Run Task">
+                                    <button onclick="runTask({{ task.id }}, event)" class="btn btn-sm btn-success" title="Run Task">
                                         <i class="fas fa-play"></i>
                                     </button>
-                                    <a href="{{ url_for('edit_task', task_id=task.id) }}" class="btn btn-sm btn-primary" title="Edit Task">
+                                    <a href="{{ url_for('edit_task', task_id=task.id) }}" class="btn btn-sm btn-primary" title="Edit Task" onclick="event.stopPropagation()">
                                         <i class="fas fa-edit"></i>
                                     </a>
                                 </div>
@@ -273,24 +275,27 @@ function viewTask(taskId, event) {
     window.location.href = `/tasks/${taskId}`;
 }
 
-async function runTask(taskId) {
+async function runTask(taskId, event) {
+    event.stopPropagation();  // Prevent row click event
     try {
         const response = await fetch(`/api/tasks/${taskId}/run`, {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').content
             }
         });
         
+        const data = await response.json();
         if (response.ok) {
+            showToast('Task started successfully', 'success');
             startPollingTask(taskId);
         } else {
-            const data = await response.json();
-            alert(data.error || 'Failed to run task');
+            showToast(data.error || 'Failed to run task', 'danger');
         }
     } catch (error) {
         console.error('Error running task:', error);
-        alert('Failed to run task');
+        showToast('Failed to run task', 'danger');
     }
 }
 </script>

@@ -25,6 +25,11 @@ class JsonFetcher(InputBlock):
     @property
     def parameters(self) -> Dict[str, Dict[str, Any]]:
         return {
+            'url': {
+                'type': 'string',
+                'required': True,
+                'description': 'URL to fetch JSON data from'
+            },
             'method': {
                 'type': 'string',
                 'required': False,
@@ -51,17 +56,24 @@ class JsonFetcher(InputBlock):
             }
         }
 
-    async def collect(self, url: str, parameters: Dict[str, Any]) -> List[Dict[str, Any]]:
+    async def collect(self, url: Optional[str], parameters: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Collect JSON data from the given URL
         
         Args:
-            url: The URL to fetch JSON data from
+            url: The URL to fetch JSON data from (can be None if provided in parameters)
             parameters: Dictionary containing request parameters
             
         Returns:
             List of dictionaries containing the JSON data
         """
         try:
+            # Get URL from parameters if not provided directly
+            if url is None:
+                url = parameters.get('url')
+                if not url:
+                    logger.error("No URL provided in parameters")
+                    return []
+            
             # Log input parameters
             logger.debug(f"Fetching JSON from URL: {url}")
             logger.debug(f"Parameters: {parameters}")

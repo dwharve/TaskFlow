@@ -417,7 +417,8 @@ function startPollingTask(taskId) {
     elements.forEach(element => {
         const statusBadge = element.querySelector('.badge');
         if (statusBadge) {
-            statusBadge.innerHTML = `<i class="fas fa-spinner fa-spin me-1"></i>${statusBadge.textContent}`;
+            const currentText = statusBadge.textContent.trim();
+            statusBadge.innerHTML = `<i class="fas fa-spinner fa-spin me-1"></i>${currentText}`;
         }
     });
     
@@ -806,7 +807,8 @@ function startPollingTask(taskId) {
     elements.forEach(element => {
         const statusBadge = element.querySelector('.badge');
         if (statusBadge) {
-            statusBadge.innerHTML = api.sanitizeInput(`<i class="fas fa-spinner fa-spin me-1"></i>${statusBadge.textContent}`);
+            const currentText = statusBadge.textContent.trim();
+            statusBadge.innerHTML = `<i class="fas fa-spinner fa-spin me-1"></i>${currentText}`;
         }
     });
 

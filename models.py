@@ -73,19 +73,15 @@ class Task(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    input_block = db.Column(db.String(100), nullable=False)
-    block_chain = db.Column(db.Text, nullable=False, default='[]')
-    target_url = db.Column(db.String(500), nullable=False)
     schedule = db.Column(db.String(100))
-    parameters = db.Column(db.Text)
     status = db.Column(db.String(20), default='pending')
     last_run = db.Column(db.DateTime)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    block_data = db.Column(db.Text)
     version = db.Column(db.Integer, default=1)  # For optimistic locking
     
-    item_states = db.relationship('ItemState', backref='task', lazy=True,
-                                cascade='all, delete-orphan')
+    # Relationships
+    blocks = db.relationship('Block', backref='task', lazy=True, cascade='all, delete-orphan')
+    item_states = db.relationship('ItemState', backref='task', lazy=True, cascade='all, delete-orphan')
     
     def update_status(self, new_status):
         """Thread-safe status update with optimistic locking"""
@@ -102,52 +98,168 @@ class Task(db.Model):
                 session.rollback()
                 raise Exception("Task was modified by another transaction")
     
+    def get_block_data(self):
+        """Get data for all blocks"""
+        block_data = {
+            "input": {},
+            "processing": {},
+            "action": {}
+        }
+        
+        for block in self.blocks:
+            if block.data:
+                try:
+                    data = json.loads(block.data)
+                    block_data[block.type][block.name] = data
+                except (json.JSONDecodeError, TypeError):
+                    continue
+        
+        return block_data
+
+    def get_block_chain(self):
+        """Get blocks in execution order (input -> processing -> action)
+        
+        Returns:
+            List of blocks in execution order, with each block containing its connections
+        """
+        # Create a map of block_id -> block for easy lookup
+        blocks_by_id = {block.id: block for block in self.blocks}
+        
+        # Create dependency graph
+        dependencies = {}  # block_id -> set of block_ids it depends on
+        for block in self.blocks:
+            dependencies[block.id] = set()
+            for conn in block.inputs:
+                dependencies[block.id].add(conn.source_block_id)
+        
+        # Separate blocks by type
+        input_blocks = []
+        processing_blocks = []
+        action_blocks = []
+        
+        for block in self.blocks:
+            if block.type == 'input':
+                input_blocks.append(block)
+            elif block.type == 'processing':
+                processing_blocks.append(block)
+            elif block.type == 'action':
+                action_blocks.append(block)
+        
+        # Build execution chain
+        execution_chain = []
+        
+        # First add input blocks (they have no dependencies)
+        execution_chain.extend(input_blocks)
+        
+        # Add processing blocks in dependency order
+        while processing_blocks:
+            # Find blocks whose dependencies are all satisfied
+            ready_blocks = [
+                block for block in processing_blocks
+                if all(dep_id in {b.id for b in execution_chain} for dep_id in dependencies[block.id])
+            ]
+            
+            if not ready_blocks and processing_blocks:
+                # We have blocks but none are ready - must be a cycle
+                break
+            
+            # Add ready blocks to chain
+            for block in ready_blocks:
+                execution_chain.append(block)
+                processing_blocks.remove(block)
+        
+        # Finally add action blocks
+        execution_chain.extend(action_blocks)
+        
+        # Add connection information to each block
+        for block in execution_chain:
+            block.input_connections = []
+            block.output_connections = []
+            
+            # Add input connections
+            for conn in block.inputs:
+                if conn.source_block_id in blocks_by_id:
+                    source_block = blocks_by_id[conn.source_block_id]
+                    block.input_connections.append({
+                        'source_block': source_block,
+                        'input_name': conn.input_name
+                    })
+            
+            # Add output connections
+            for conn in block.outputs:
+                if conn.target_block_id in blocks_by_id:
+                    target_block = blocks_by_id[conn.target_block_id]
+                    block.output_connections.append({
+                        'target_block': target_block,
+                        'input_name': conn.input_name
+                    })
+        
+        return execution_chain
+
+class Block(db.Model):
+    """Model representing a block in a task"""
+    __tablename__ = 'blocks'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    task_id = db.Column(db.Integer, db.ForeignKey('tasks.id', ondelete='CASCADE'), nullable=False)
+    name = db.Column(db.String(100), nullable=False)
+    type = db.Column(db.String(20), nullable=False)  # 'input', 'processing', or 'action'
+    display_name = db.Column(db.String(100))  # Display name for the block
+    parameters = db.Column(db.Text)  # JSON string of parameters
+    data = db.Column(db.Text)  # JSON string of block output data
+    position_x = db.Column(db.Float)  # For UI positioning
+    position_y = db.Column(db.Float)  # For UI positioning
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    outputs = db.relationship(
+        'BlockConnection',
+        foreign_keys='BlockConnection.source_block_id',
+        backref='source_block',
+        lazy=True,
+        cascade='all, delete-orphan'
+    )
+    inputs = db.relationship(
+        'BlockConnection',
+        foreign_keys='BlockConnection.target_block_id',
+        backref='target_block',
+        lazy=True,
+        cascade='all, delete-orphan'
+    )
+    
     def set_parameters(self, parameters):
-        """Set parameters for all blocks in the chain"""
+        """Set block parameters"""
         if isinstance(parameters, dict):
             parameters = json.dumps(parameters)
         self.parameters = parameters
     
     def get_parameters(self):
-        """Get parameters for all blocks"""
+        """Get block parameters"""
         return json.loads(self.parameters) if self.parameters else {}
     
-    def set_block_chain(self, blocks):
-        """Set the chain of blocks to execute"""
-        if isinstance(blocks, list):
-            blocks = json.dumps(blocks)
-        self.block_chain = blocks
-    
-    def get_block_chain(self):
-        """Get the chain of blocks"""
-        return json.loads(self.block_chain) if self.block_chain else []
-    
-    def set_block_data(self, data):
-        """Set data for all blocks in the chain"""
-        if isinstance(data, dict):
+    def set_data(self, data):
+        """Set block output data"""
+        if isinstance(data, (dict, list)):
             data = json.dumps(data)
-        self.block_data = data
+        self.data = data
     
-    def get_block_data(self):
-        """Get data for all blocks"""
-        default_data = {
-            "input": [],
-            "processing": {},
-            "action": {}
-        }
-        
-        if not self.block_data:
-            return default_data
-            
-        try:
-            data = json.loads(self.block_data)
-            return {
-                "input": data.get("input", []),
-                "processing": data.get("processing", {}),
-                "action": data.get("action", {})
-            }
-        except (json.JSONDecodeError, TypeError):
-            return default_data
+    def get_data(self):
+        """Get block output data"""
+        return json.loads(self.data) if self.data else None
+
+class BlockConnection(db.Model):
+    """Model representing a connection between blocks"""
+    __tablename__ = 'block_connections'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    source_block_id = db.Column(db.Integer, db.ForeignKey('blocks.id', ondelete='CASCADE'), nullable=False)
+    target_block_id = db.Column(db.Integer, db.ForeignKey('blocks.id', ondelete='CASCADE'), nullable=False)
+    input_name = db.Column(db.String(50))  # Name of the input on the target block (for blocks with multiple inputs)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    __table_args__ = (
+        db.UniqueConstraint('source_block_id', 'target_block_id', 'input_name', name='unique_connection'),
+    )
 
 class ItemState(db.Model):
     """Model for storing seen items for the item monitor plugin"""
