@@ -27,7 +27,7 @@ app = Flask(__name__)
 # Get log level from environment
 log_level = os.environ.get('LOG_LEVEL', 'INFO')
 # Get log level from arguments
-log_level = sys.argv[1] if len(sys.argv) > 1 else log_level
+# log_level = sys.argv[1] if len(sys.argv) > 1 else log_level
 
 # Set up logging with pid and thread name
 logging.basicConfig(
