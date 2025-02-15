@@ -48,27 +48,6 @@ The application uses a modular block-based system with three main types of block
 - Tracks block states and configurations
 - Migration support for schema updates
 
-### File Structure
-```
-├── app.py              # Main application file
-├── models.py           # Database models
-├── scheduler.py        # Task scheduling system
-├── blocks/            # Block system implementation
-│   ├── manager.py     # Block management
-│   ├── input/         # Input blocks
-│   ├── processing/    # Processing blocks
-│   └── action/        # Action blocks
-├── templates/         # HTML templates
-│   ├── base.html      # Base template
-│   ├── dashboard.html # Main dashboard
-│   ├── tasks.html     # Task listing
-│   ├── blocks.html    # Block management
-│   └── ...           # Other templates
-├── static/           # Static assets
-│   └── js/          # JavaScript files
-└── migrations/       # Database migrations
-```
-
 ### Setup and Installation
 
 #### Traditional Setup
@@ -159,8 +138,3 @@ Contributions are welcome! Please follow these steps:
 1. Fork the repository
 2. Create a feature branch
 3. Submit a pull request
-
-## License
-[Insert License Information]
-
-
