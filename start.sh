@@ -4,6 +4,7 @@
 export FLASK_APP=app.py
 export FLASK_ENV=production
 export PYTHONPATH=$PYTHONPATH:$(pwd)
+export SERVER_SOFTWARE=gunicorn
 
 # Initialize the database (this will recreate tables if needed)
 python -c "from app import app, init_db; init_db()"
@@ -20,4 +21,5 @@ gunicorn \
     --max-requests 1000 \
     --max-requests-jitter 100 \
     --log-level info \
-    app:app
+    --env GUNICORN_WORKER_ID=0 \
+    wsgi:app

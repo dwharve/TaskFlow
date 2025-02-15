@@ -60,10 +60,9 @@ app.config['WTF_CSRF_ENABLED'] = True
 db.init_app(app)
 migrate = Migrate(app, db)
 
-# Initialize and start scheduler
+# Initialize scheduler without starting it
 from scheduler import scheduler
 scheduler.init_app(app)
-scheduler.start()
 
 with app.app_context():
     try:
