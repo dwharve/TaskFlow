@@ -16,6 +16,7 @@ from wtforms import StringField, PasswordField
 from wtforms.validators import DataRequired, Length, EqualTo
 import threading
 from sqlalchemy import inspect
+import sqlalchemy
 
 from models import db, User, Task, Settings
 from blocks.manager import manager
@@ -35,28 +36,44 @@ def generate_secret_key():
     return secrets.token_hex(32)
 
 def initialize_secret_key():
+    """Initialize or retrieve the secret key from environment or database"""
     # Try to get SECRET_KEY from environment
     secret_key = os.environ.get('SECRET_KEY')
+    if secret_key:
+        return secret_key
     
-    if not secret_key:
-        # Try to get from database
+    # Try to get from database
+    try:
         with app.app_context():
-            secret_key = Settings.get_setting('SECRET_KEY')
-            
-            if not secret_key:
-                # Generate new key and store in database
+            with session_scope() as session:
+                # Check if setting exists
+                setting = session.query(Settings).filter_by(key='SECRET_KEY').first()
+                if setting:
+                    return setting.value
+                
+                # If no setting exists, create new one
                 secret_key = generate_secret_key()
-                Settings.set_setting('SECRET_KEY', secret_key)
-    
-    return secret_key
+                new_setting = Settings(key='SECRET_KEY', value=secret_key)
+                session.add(new_setting)
+                return secret_key
+    except Exception as e:
+        logger.error(f"Error managing secret key: {str(e)}")
+        # If we can't access the database, generate a temporary key
+        # This allows the application to start, but the key will change on restart
+        return generate_secret_key()
 
 def init_db():
-    """Initialize the database"""
+    """Initialize the database only if it's new/empty"""
     with app.app_context():
-        # Drop all tables
-        db.drop_all()
-        # Create all tables with updated schema
-        db.create_all()
+        inspector = inspect(db.engine)
+        existing_tables = inspector.get_table_names()
+        
+        if not existing_tables:
+            # Only create tables if database is empty
+            logger.info("Initializing new database - creating tables")
+            db.create_all()
+            return True
+        return False
 
 # Configuration
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///database.db')
@@ -65,20 +82,26 @@ app.config['WTF_CSRF_ENABLED'] = True
 
 # Initialize extensions
 db.init_app(app)
-
-# Create tables and initialize secret key
-with app.app_context():
-    # Check if we need to initialize the database
-    try:
-        # Try to query the settings table
-        Settings.query.first()
-    except Exception as e:
-        # If there's an error (like missing column), initialize the database
-        init_db()
-    
-    app.config['SECRET_KEY'] = initialize_secret_key()
-
 migrate = Migrate(app, db)
+
+# Initialize database and secret key
+with app.app_context():
+    try:
+        # First check if we need to initialize the database
+        is_new_db = init_db()
+        
+        # Now try to get or create secret key
+        secret_key = initialize_secret_key()
+        app.config['SECRET_KEY'] = secret_key
+        
+    except Exception as e:
+        logger.error(f"Error during initialization: {str(e)}")
+        # Generate a temporary secret key to allow the app to start
+        app.config['SECRET_KEY'] = generate_secret_key()
+        # Re-raise the exception if it's not related to the secret key
+        if not isinstance(e, (sqlalchemy.exc.IntegrityError, sqlalchemy.exc.OperationalError)):
+            raise
+
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
