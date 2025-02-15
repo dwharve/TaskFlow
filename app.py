@@ -29,7 +29,7 @@ log_level = os.environ.get('LOG_LEVEL', 'INFO')
 # Set up logging with pid and thread name
 logging.basicConfig(
     level=log_level,
-    format='%(asctime)s - %(process)d - %(threadName)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(process)d - %(name)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
     force=True  # Force reconfiguration of the root logger
 )
