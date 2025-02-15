@@ -23,6 +23,7 @@ class TaskScheduler:
         self.scheduler = BackgroundScheduler()
         self._running_tasks: Dict[int, threading.Thread] = {}
         self.app: Optional[Flask] = None
+        self._last_check_time = datetime.min
     
     def init_app(self, app: Flask):
         """Initialize the scheduler with Flask app
@@ -76,6 +77,32 @@ class TaskScheduler:
             logger.error(f"Traceback: {traceback.format_exc()}")
             return 0
     
+    def _check_schedule_updates(self):
+        """Check for any schedule updates since last check"""
+        if not self.app:
+            return
+            
+        try:
+            with self.app.app_context():
+                # Query for tasks with schedule updates since last check
+                updated_tasks = Task.query.filter(
+                    Task.last_schedule_update > self._last_check_time
+                ).all()
+                
+                if updated_tasks:
+                    logger.info(f"Found {len(updated_tasks)} tasks with schedule updates")
+                    for task in updated_tasks:
+                        try:
+                            self.schedule_task(task)
+                            logger.info(f"Updated schedule for task {task.id}")
+                        except Exception as e:
+                            logger.error(f"Failed to update schedule for task {task.id}: {str(e)}")
+                
+                self._last_check_time = datetime.utcnow()
+                
+        except Exception as e:
+            logger.error(f"Error checking for schedule updates: {str(e)}")
+    
     def start(self):
         """Start the scheduler"""
         if not self.app:
@@ -89,6 +116,15 @@ class TaskScheduler:
             
             # Load and schedule existing tasks
             num_tasks = self._load_existing_tasks()
+            
+            # Add job to check for schedule updates every minute
+            self.scheduler.add_job(
+                self._check_schedule_updates,
+                'interval',
+                minutes=1,
+                id='schedule_update_checker',
+                next_run_time=datetime.now()
+            )
             
             # Log currently scheduled jobs
             jobs = self.scheduler.get_jobs()

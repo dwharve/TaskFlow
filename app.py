@@ -583,9 +583,15 @@ def edit_task(task_id):
             with session_scope() as session:
                 task = session.get(Task, task_id)
                 
+                # Check if schedule is being updated
+                new_schedule = request.form.get('schedule')
+                if new_schedule != task.schedule:
+                    task.schedule = new_schedule
+                    task.last_schedule_update = datetime.utcnow()
+                    logger.info(f"Updated schedule for task {task_id} to: {new_schedule}")
+                
                 # Update basic task info
                 task.name = request.form['name']
-                task.schedule = request.form.get('schedule')
                 
                 # Parse block data
                 blocks_data = json.loads(request.form['blocks_data'])
