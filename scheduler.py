@@ -127,7 +127,11 @@ class TaskScheduler:
         
         try:
             # Remove any existing job
-            self.remove_task(task)
+            try:
+                self.scheduler.remove_job(str(task.id))
+                logger.info(f"Successfully removed existing job for task {task.id}")
+            except Exception as e:
+                logger.debug(f"No existing job found for task {task.id}: {str(e)}")
             
             # Parse cron schedule for logging
             trigger = CronTrigger.from_crontab(task.schedule)
@@ -139,7 +143,8 @@ class TaskScheduler:
                 trigger,
                 args=[task.id],
                 id=str(task.id),
-                replace_existing=True
+                replace_existing=True,
+                misfire_grace_time=None  # Disable grace time to prevent misfired jobs from running
             )
             logger.info(f"Successfully scheduled task {task.id}. Next run at: {next_run}")
             
@@ -156,8 +161,15 @@ class TaskScheduler:
         """
         logger.info(f"Removing task {task.id} from scheduler")
         try:
+            # Remove the job
             self.scheduler.remove_job(str(task.id))
             logger.info(f"Successfully removed task {task.id} from scheduler")
+            
+            # Also remove from running tasks if it's there
+            if task.id in self._running_tasks:
+                thread = self._running_tasks.pop(task.id)
+                logger.info(f"Removed task {task.id} from running tasks. Thread alive: {thread.is_alive()}")
+                
         except Exception as e:
             logger.debug(f"Error removing task {task.id} (may not have been scheduled): {str(e)}")
     
