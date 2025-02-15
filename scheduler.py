@@ -41,26 +41,36 @@ class TaskScheduler:
             
         try:
             with self.app.app_context():
-                # Query for all tasks that have a schedule
+                # Query for all tasks that have a schedule and are not in a running state
                 tasks = Task.query.filter(
                     and_(
                         Task.schedule.isnot(None),
-                        Task.schedule != ''
+                        Task.schedule != '',
+                        Task.status != 'running'  # Don't reschedule running tasks
                     )
                 ).all()
                 
                 logger.info(f"Found {len(tasks)} scheduled tasks in database")
                 
+                # Reset any running tasks to 'failed' state
+                running_tasks = Task.query.filter_by(status='running').all()
+                for task in running_tasks:
+                    task.status = 'failed'
+                    logger.info(f"Reset running task {task.id} to failed state")
+                db.session.commit()
+                
                 # Schedule each task
+                scheduled = 0
                 for task in tasks:
                     try:
                         self.schedule_task(task)
+                        scheduled += 1
                     except Exception as e:
                         logger.error(f"Failed to schedule existing task {task.id}: {str(e)}")
                         logger.error(f"Traceback: {traceback.format_exc()}")
                         continue
                 
-                return len(tasks)
+                return scheduled
         except Exception as e:
             logger.error(f"Error loading existing tasks: {str(e)}")
             logger.error(f"Traceback: {traceback.format_exc()}")
