@@ -27,7 +27,7 @@ app = Flask(__name__)
 # Get log level from environment
 log_level = os.environ.get('LOG_LEVEL', 'INFO')
 # Get log level from arguments
-# log_level = sys.argv[1] if len(sys.argv) > 1 else log_level
+log_level = sys.argv[1] if len(sys.argv) > 1 else log_level
 
 # Set up logging with pid and thread name
 logging.basicConfig(
@@ -59,6 +59,11 @@ app.config['WTF_CSRF_ENABLED'] = True
 # Initialize extensions
 db.init_app(app)
 migrate = Migrate(app, db)
+
+# Initialize and start scheduler
+from scheduler import scheduler
+scheduler.init_app(app)
+scheduler.start()
 
 with app.app_context():
     try:
@@ -132,7 +137,6 @@ if not secret_key:
 app.config['SECRET_KEY'] = secret_key
 
 from blocks.manager import manager
-from scheduler import scheduler
 
 login_manager = LoginManager()
 login_manager.init_app(app)

@@ -8,9 +8,6 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)
 # Initialize the database (this will recreate tables if needed)
 python -c "from app import app, init_db; init_db()"
 
-# Start the scheduler in the background
-python -c "from app import app, scheduler; scheduler.start()" &
-
 # Start gunicorn with thread-safe configuration
 gunicorn \
     --bind 0.0.0.0:5000 \

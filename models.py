@@ -115,6 +115,20 @@ class Task(db.Model):
                     continue
         
         return block_data
+    
+    def set_block_data(self, results):
+        """Store block execution results
+        
+        Args:
+            results: Dictionary containing results for each block type
+        """
+        for block_type, type_results in results.items():
+            for block_name, block_data in type_results.items():
+                # Find the block
+                block = next((b for b in self.blocks 
+                            if b.type == block_type and b.name == block_name), None)
+                if block:
+                    block.set_data(block_data)
 
     def get_block_chain(self):
         """Get blocks in execution order (input -> processing -> action)

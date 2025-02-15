@@ -127,112 +127,91 @@ class BlockManager:
             Dictionary containing the results of each block in the chain
         """
         logger.info(f"Executing block chain for task {task.id}")
-        results = {}
+        results = {
+            "input": {},
+            "processing": {},
+            "action": {}
+        }
         
-        # Execute input block
-        input_block_class = self.get_block("input", task.input_block)
-        if not input_block_class:
-            error_msg = f"Input block {task.input_block} not found"
+        # Get block chain in execution order
+        block_chain = task.get_block_chain()
+        if not block_chain:
+            error_msg = f"No blocks found for task {task.id}"
             logger.error(error_msg)
             raise ValueError(error_msg)
-        
-        logger.info(f"Executing input block: {task.input_block}")
-        input_block = input_block_class()
-        
-        # Get parameters from the block itself
-        block_params = {}
-        for block in task.blocks:
-            if block.type == 'input' and block.name == task.input_block:
-                block_params = block.get_parameters()
-                break
-        
-        results["input"] = await input_block.collect(
-            task.target_url,
-            block_params
-        )
-        logger.debug(f"Input block results: {len(results['input'])} items")
-        
-        # Initialize processing and action results
-        results["processing"] = {}
-        results["action"] = {}
-        
-        # Get current data to pass to next block
-        current_data = results["input"]
-        
-        # Execute block chain
-        block_chain = task.get_block_chain()
-        logger.debug(f"Block chain: {block_chain}")
-        
-        # Group blocks by chain
-        chains = []
-        current_chain = []
-        
-        for block in block_chain:
-            if block['type'] == 'action' and current_chain:
-                current_chain.append(block)
-                chains.append(current_chain)
-                current_chain = []
-            else:
-                current_chain.append(block)
-        
-        if current_chain:
-            chains.append(current_chain)
-        
-        logger.info(f"Found {len(chains)} processing chains")
-        
-        # Process each chain independently with the input data
-        for chain_index, chain in enumerate(chains):
-            logger.info(f"Processing chain {chain_index + 1}")
-            chain_data = current_data.copy()
             
-            for block_config in chain:
-                block_type = block_config["type"]
-                block_name = block_config["name"]
-                logger.debug(f"Executing {block_type} block: {block_name}")
+        # Track outputs of each block
+        block_outputs = {}
+        
+        # Execute blocks in order
+        for block in block_chain:
+            logger.info(f"Executing {block.type} block: {block.name}")
+            
+            # Get block class
+            block_class = self.get_block(block.type, block.name)
+            if not block_class:
+                error_msg = f"{block.type.title()} block {block.name} not found"
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+            
+            # Create block instance
+            block_instance = block_class()
+            
+            try:
+                # Get block parameters
+                block_params = block.get_parameters()
                 
-                block_class = self.get_block(block_type, block_name)
-                if not block_class:
-                    error_msg = f"{block_type.title()} block {block_name} not found"
-                    logger.error(error_msg)
-                    raise ValueError(error_msg)
+                if block.type == "input":
+                    # Get URL from parameters if present
+                    url = block_params.pop('url', None) if block_params else None
+                    # Execute input block
+                    result = await block_instance.collect(url, block_params)
+                    results["input"][block.name] = result
+                    block_outputs[block.id] = result
+                    
+                elif block.type == "processing":
+                    # Get input data from dependencies
+                    input_data = []
+                    for conn in block.inputs:
+                        if conn.source_block_id in block_outputs:
+                            input_data.extend(block_outputs[conn.source_block_id])
+                    
+                    # Add task_id to processing block parameters
+                    block_params['task_id'] = task.id
+                    
+                    # Execute processing block
+                    result = await block_instance.process(input_data, block_params)
+                    results["processing"][block.name] = result
+                    block_outputs[block.id] = result
+                    
+                elif block.type == "action":
+                    # Get input data from dependencies
+                    input_data = []
+                    for conn in block.inputs:
+                        if conn.source_block_id in block_outputs:
+                            input_data.extend(block_outputs[conn.source_block_id])
+                    
+                    # Execute action block
+                    action_results = []
+                    for item in input_data:
+                        try:
+                            result = await block_instance.execute(item, block_params)
+                            action_results.append(result)
+                        except Exception as e:
+                            logger.error(f"Error executing action block {block.name} for item: {str(e)}")
+                            action_results.append({
+                                "error": str(e),
+                                "item": item
+                            })
+                    results["action"][block.name] = action_results
+                    block_outputs[block.id] = action_results
                 
-                block = block_class()
-                try:
-                    if block_type == "processing":
-                        # Add task_id to processing block parameters
-                        block_params = block.get_parameters()
-                        block_params['task_id'] = task.id
-                        
-                        # Processing blocks work on lists of items
-                        chain_data = await block.process(
-                            chain_data,
-                            block_params
-                        )
-                        results["processing"][block_name] = chain_data
-                        logger.debug(f"Processing block {block_name} results: {len(chain_data)} items")
-                    elif block_type == "action":
-                        # Action blocks work on individual items
-                        action_results = []
-                        for item in chain_data:
-                            try:
-                                result = await block.execute(
-                                    item,
-                                    block.get_parameters()
-                                )
-                                action_results.append(result)
-                            except Exception as e:
-                                logger.error(f"Error executing action block {block_name} for item: {str(e)}")
-                                action_results.append({
-                                    "error": str(e),
-                                    "item": item
-                                })
-                        results["action"][block_name] = action_results
-                        chain_data = action_results
-                        logger.debug(f"Action block {block_name} results: {len(action_results)} items")
-                except Exception as e:
-                    error_msg = f"Error executing {block_type} block {block_name}: {str(e)}"
-                    logger.error(error_msg, exc_info=True)
-                    raise ValueError(error_msg)
+                logger.debug(f"{block.type.title()} block {block.name} results: {len(block_outputs[block.id])} items")
+                
+            except Exception as e:
+                error_msg = f"Error executing {block.type} block {block.name}: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                raise ValueError(error_msg)
         
         return results
 
