@@ -15,9 +15,15 @@ DB_FILE="$INSTANCE_DIR/database.db"
 touch "$DB_FILE"
 chmod 666 "$DB_FILE"
 
-# Create migrations directory if it doesn't exist
+# Create migrations directory with proper permissions
 mkdir -p migrations
 chmod 777 migrations
+
+# Clean up migrations directory if it's not properly initialized
+if [ ! -f "migrations/env.py" ] || [ ! -f "migrations/script.py.mako" ] || [ ! -f "migrations/alembic.ini" ]; then
+    echo "Cleaning up migrations directory..."
+    rm -rf migrations/*
+fi
 
 # Initialize the database with migrations
 echo "Initializing database..."

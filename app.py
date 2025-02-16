@@ -67,24 +67,27 @@ def initialize_database(app):
             os.chmod(db_path, 0o666)  # Make database file writable
         
         with app.app_context():
-            # Initialize migrations directory if it doesn't exist
-            if not os.path.exists('migrations'):
-                logger.info("Initializing migrations directory")
+            # Check if migrations directory exists and is properly initialized
+            migrations_initialized = (
+                os.path.exists('migrations/env.py') and
+                os.path.exists('migrations/script.py.mako') and
+                os.path.exists('migrations/alembic.ini')
+            )
+            
+            if not migrations_initialized:
+                logger.info("Migrations not properly initialized")
                 try:
+                    # Remove migrations directory if it exists but is not properly initialized
+                    if os.path.exists('migrations'):
+                        import shutil
+                        logger.info("Removing existing migrations directory")
+                        shutil.rmtree('migrations')
+                    
+                    # Initialize migrations
+                    logger.info("Initializing migrations")
                     flask_migrate.init()
                 except Exception as e:
                     logger.error(f"Error initializing migrations: {str(e)}")
-                    # If migrations fail, fall back to create_all
-                    db.create_all()
-                    return
-            
-            # Check if env.py exists, if not, reinitialize migrations
-            if not os.path.exists('migrations/env.py'):
-                logger.info("migrations/env.py not found, reinitializing migrations")
-                try:
-                    flask_migrate.init()
-                except Exception as e:
-                    logger.error(f"Error reinitializing migrations: {str(e)}")
                     # If migrations fail, fall back to create_all
                     db.create_all()
                     return
