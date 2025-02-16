@@ -20,7 +20,9 @@ mkdir -p migrations
 chmod 777 migrations
 
 # Initialize the database with migrations
-python -c "from app import app, initialize_database; initialize_database(app)"
+echo "Initializing database..."
+python -c "from app import app, initialize_database; initialize_database(app)" || exit 1
+echo "Database initialization complete"
 
 # Start supervisord
 exec /usr/bin/supervisord -n -c /app/supervisord.conf

@@ -466,6 +466,24 @@ def create_app():
     # Initialize database connection only
     db.init_app(app)
     
+    # Wait for database to be ready
+    with app.app_context():
+        max_retries = 30
+        retry_interval = 1
+        for attempt in range(max_retries):
+            try:
+                # Try to query the database
+                db.session.execute('SELECT 1')
+                logger.info("Database is ready")
+                break
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.info(f"Database not ready, retrying in {retry_interval} seconds... (Attempt {attempt + 1}/{max_retries})")
+                    time.sleep(retry_interval)
+                else:
+                    logger.error("Failed to connect to database after maximum retries")
+                    raise
+    
     return app
 
 # Global instance
