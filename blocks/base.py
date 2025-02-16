@@ -71,6 +71,21 @@ class InputBlock(BaseBlock):
             List of dictionaries containing the collected data
         """
         pass
+    
+    async def process(self, data: List[Dict[str, Any]], parameters: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Process input by calling collect
+        
+        This method is called by the block manager and delegates to collect.
+        
+        Args:
+            data: Ignored for input blocks
+            parameters: Dictionary of parameter values
+            
+        Returns:
+            List of dictionaries containing the collected data
+        """
+        url = parameters.get('url') if self.target_url is None else self.target_url
+        return await self.collect(url, parameters)
 
 class ProcessingBlock(BaseBlock):
     """Base class for processing blocks"""
