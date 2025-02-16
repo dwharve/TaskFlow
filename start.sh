@@ -20,5 +20,4 @@ gunicorn \
     --max-requests 1000 \
     --max-requests-jitter 100 \
     --log-level info \
-    --config python:wsgi \
-    wsgi:app
+    app:app

@@ -60,10 +60,6 @@ app.config['WTF_CSRF_ENABLED'] = True
 db.init_app(app)
 migrate = Migrate(app, db)
 
-# Initialize scheduler without starting it
-from scheduler import scheduler
-scheduler.init_app(app)
-
 with app.app_context():
     try:
         # Create database directory if it doesn't exist
@@ -134,6 +130,11 @@ if not secret_key:
     Settings.set_setting('SECRET_KEY', secret_key)
 
 app.config['SECRET_KEY'] = secret_key
+
+# Initialize and start scheduler
+from scheduler import scheduler
+scheduler.init_app(app)
+scheduler.start()
 
 from blocks.manager import manager
 
@@ -583,15 +584,9 @@ def edit_task(task_id):
             with session_scope() as session:
                 task = session.get(Task, task_id)
                 
-                # Check if schedule is being updated
-                new_schedule = request.form.get('schedule')
-                if new_schedule != task.schedule:
-                    task.schedule = new_schedule
-                    task.last_schedule_update = datetime.utcnow()
-                    logger.info(f"Updated schedule for task {task_id} to: {new_schedule}")
-                
                 # Update basic task info
                 task.name = request.form['name']
+                task.schedule = request.form.get('schedule')
                 
                 # Parse block data
                 blocks_data = json.loads(request.form['blocks_data'])

@@ -71,14 +71,13 @@ class User(UserMixin, db.Model):
 class Task(db.Model):
     __tablename__ = 'tasks'
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(255), nullable=False)
+    name = db.Column(db.String(100), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    schedule = db.Column(db.String(255))
-    status = db.Column(db.String(50), default='pending')
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    schedule = db.Column(db.String(100))
+    status = db.Column(db.String(20), default='pending')
     last_run = db.Column(db.DateTime)
-    last_schedule_update = db.Column(db.DateTime)  # Track when schedule was last updated
-    block_data = db.Column(db.JSON)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    version = db.Column(db.Integer, default=1)  # For optimistic locking
     
     # Relationships
     blocks = db.relationship('Block', backref='task', lazy=True, cascade='all, delete-orphan')

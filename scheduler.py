@@ -4,6 +4,8 @@ import logging
 from typing import Optional, Dict, Any
 import threading
 import traceback
+import json
+import queue
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -12,8 +14,14 @@ from flask import Flask
 
 from models import Task, db
 from blocks.manager import manager
+from pubsub import pubsub, Message
 
 logger = logging.getLogger(__name__)
+
+# Topics for pub/sub communication
+TASK_START_TOPIC = "task_start"
+TASK_COMPLETE_TOPIC = "task_complete"
+TASK_FAILED_TOPIC = "task_failed"
 
 class TaskScheduler:
     """Scheduler for running tasks on a schedule"""
@@ -23,7 +31,57 @@ class TaskScheduler:
         self.scheduler = BackgroundScheduler()
         self._running_tasks: Dict[int, threading.Thread] = {}
         self.app: Optional[Flask] = None
-        self._last_check_time = datetime.min
+        self._task_queues: Dict[str, queue.Queue] = {}
+        self._setup_pubsub()
+    
+    def _setup_pubsub(self):
+        """Setup pub/sub subscriptions"""
+        # Subscribe to task completion events
+        self._task_queues[TASK_COMPLETE_TOPIC] = pubsub.subscribe(TASK_COMPLETE_TOPIC)
+        self._task_queues[TASK_FAILED_TOPIC] = pubsub.subscribe(TASK_FAILED_TOPIC)
+        
+        # Start listener thread
+        self._listener_thread = threading.Thread(target=self._listen_for_events, daemon=True)
+        self._listener_thread.start()
+    
+    def _listen_for_events(self):
+        """Listen for task events from other workers"""
+        while True:
+            try:
+                # Check complete queue
+                try:
+                    message = self._task_queues[TASK_COMPLETE_TOPIC].get_nowait()
+                    task_id = message.data
+                    logger.info(f"Received task completion notification for task {task_id}")
+                    self._cleanup_task(task_id)
+                except queue.Empty:
+                    pass
+                
+                # Check failed queue
+                try:
+                    message = self._task_queues[TASK_FAILED_TOPIC].get_nowait()
+                    task_id = message.data
+                    logger.info(f"Received task failure notification for task {task_id}")
+                    self._cleanup_task(task_id)
+                except queue.Empty:
+                    pass
+                
+                # Sleep briefly to prevent tight loop
+                threading.Event().wait(0.1)
+                
+            except Exception as e:
+                logger.error(f"Error in event listener: {str(e)}")
+                logger.error(traceback.format_exc())
+    
+    def _cleanup_task(self, task_id: int):
+        """Clean up after task completion
+        
+        Args:
+            task_id: ID of completed task
+        """
+        if task_id in self._running_tasks:
+            thread = self._running_tasks.pop(task_id)
+            logger.info(f"Cleaned up task {task_id}. Thread alive: {thread.is_alive()}")
     
     def init_app(self, app: Flask):
         """Initialize the scheduler with Flask app
@@ -42,66 +100,30 @@ class TaskScheduler:
             
         try:
             with self.app.app_context():
-                # Query for all tasks that have a schedule and are not in a running state
+                # Query for all tasks that have a schedule
                 tasks = Task.query.filter(
                     and_(
                         Task.schedule.isnot(None),
-                        Task.schedule != '',
-                        Task.status != 'running'  # Don't reschedule running tasks
+                        Task.schedule != ''
                     )
                 ).all()
                 
                 logger.info(f"Found {len(tasks)} scheduled tasks in database")
                 
-                # Reset any running tasks to 'failed' state
-                running_tasks = Task.query.filter_by(status='running').all()
-                for task in running_tasks:
-                    task.status = 'failed'
-                    logger.info(f"Reset running task {task.id} to failed state")
-                db.session.commit()
-                
                 # Schedule each task
-                scheduled = 0
                 for task in tasks:
                     try:
                         self.schedule_task(task)
-                        scheduled += 1
                     except Exception as e:
                         logger.error(f"Failed to schedule existing task {task.id}: {str(e)}")
                         logger.error(f"Traceback: {traceback.format_exc()}")
                         continue
                 
-                return scheduled
+                return len(tasks)
         except Exception as e:
             logger.error(f"Error loading existing tasks: {str(e)}")
             logger.error(f"Traceback: {traceback.format_exc()}")
             return 0
-    
-    def _check_schedule_updates(self):
-        """Check for any schedule updates since last check"""
-        if not self.app:
-            return
-            
-        try:
-            with self.app.app_context():
-                # Query for tasks with schedule updates since last check
-                updated_tasks = Task.query.filter(
-                    Task.last_schedule_update > self._last_check_time
-                ).all()
-                
-                if updated_tasks:
-                    logger.info(f"Found {len(updated_tasks)} tasks with schedule updates")
-                    for task in updated_tasks:
-                        try:
-                            self.schedule_task(task)
-                            logger.info(f"Updated schedule for task {task.id}")
-                        except Exception as e:
-                            logger.error(f"Failed to update schedule for task {task.id}: {str(e)}")
-                
-                self._last_check_time = datetime.utcnow()
-                
-        except Exception as e:
-            logger.error(f"Error checking for schedule updates: {str(e)}")
     
     def start(self):
         """Start the scheduler"""
@@ -116,15 +138,6 @@ class TaskScheduler:
             
             # Load and schedule existing tasks
             num_tasks = self._load_existing_tasks()
-            
-            # Add job to check for schedule updates every minute
-            self.scheduler.add_job(
-                self._check_schedule_updates,
-                'interval',
-                minutes=1,
-                id='schedule_update_checker',
-                next_run_time=datetime.now()
-            )
             
             # Log currently scheduled jobs
             jobs = self.scheduler.get_jobs()
@@ -231,6 +244,13 @@ class TaskScheduler:
             
         logger.info(f"Initiating task run for task {task_id}")
         
+        # Check if task is already running by publishing a start request
+        # Other workers will respond if they're already running it
+        pubsub.publish(TASK_START_TOPIC, task_id)
+        
+        # Brief wait to allow other workers to respond
+        threading.Event().wait(0.1)
+        
         # Check if task is already running
         if task_id in self._running_tasks:
             logger.warning(f"Task {task_id} is already running, skipping this execution")
@@ -273,6 +293,7 @@ class TaskScheduler:
                     task.status = 'failed'
                     db.session.commit()
                     logger.info(f"Updated task {task_id} status to 'failed'")
+                pubsub.publish(TASK_FAILED_TOPIC, task_id)
             except Exception as inner_e:
                 logger.error(f"Failed to update task status: {str(inner_e)}")
     
@@ -296,29 +317,31 @@ class TaskScheduler:
                     logger.error(f"Task {task_id} not found when starting thread execution")
                     return
                 
-                logger.info(f"Running async execution for task {task_id}")
-                # Run the async function in a new event loop
+                # Execute task
                 asyncio.run(self._execute_task(task))
                 
-                # Update task status
+                # Update status and notify other workers
                 task.status = 'completed'
+                task.last_run = datetime.utcnow()
                 db.session.commit()
+                pubsub.publish(TASK_COMPLETE_TOPIC, task_id)
                 logger.info(f"Task {task_id} completed successfully")
-            
+                
         except Exception as e:
-            logger.error(f"Error executing task {task_id} in thread {thread_name}: {str(e)}")
+            logger.error(f"Error in task thread {task_id}: {str(e)}")
             logger.error(f"Traceback: {traceback.format_exc()}")
             try:
                 with self.app.app_context():
                     task.status = 'failed'
                     db.session.commit()
-                    logger.info(f"Updated task {task_id} status to 'failed'")
+                pubsub.publish(TASK_FAILED_TOPIC, task_id)
             except Exception as inner_e:
                 logger.error(f"Failed to update task status: {str(inner_e)}")
             
         finally:
-            # Remove task from running tasks
-            self._running_tasks.pop(task_id, None)
+            # Clean up
+            if task_id in self._running_tasks:
+                del self._running_tasks[task_id]
             logger.info(f"Removed task {task_id} from running tasks. Thread {thread_name} complete")
     
     async def _execute_task(self, task: Task):
