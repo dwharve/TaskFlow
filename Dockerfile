@@ -40,38 +40,22 @@ ENV FLASK_APP=app.py \
     WORKERS=4 \
     TIMEOUT=120
 
+# Install required system packages
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends util-linux && \
+    rm -rf /var/lib/apt/lists/*
+
 # Copy application files
 COPY . .
 
-# Create app group and users
-RUN groupadd -r appgroup && \
+# Create necessary directories and set permissions
+RUN mkdir -p /app/instance /app/logs /app/run && \
+    groupadd -r appgroup && \
     useradd -r -g appgroup appuser && \
-    mkdir -p /app/instance /app/logs && \
     chown -R appuser:appgroup /app && \
     chmod -R 750 /app && \
-    chmod 770 /app/instance /app/logs
-
-# Create and set permissions for database directory
-RUN mkdir -p /app/instance && \
-    chown -R appuser:appgroup /app/instance && \
-    chmod 770 /app/instance && \
-    touch /app/instance/database.db && \
-    chown appuser:appgroup /app/instance/database.db && \
-    chmod 660 /app/instance/database.db
-
-# Create directory for process management
-RUN mkdir -p /app/run && \
-    chown -R appuser:appgroup /app/run && \
-    chmod 770 /app/run && \
-    touch /app/run/flask.pid /app/run/scheduler.pid && \
-    chown appuser:appgroup /app/run/*.pid && \
-    chmod 660 /app/run/*.pid
-
-# Make scripts executable
-RUN chmod 770 /app/start.sh
-
-# Switch to non-root user
-USER appuser
+    chmod 770 /app/instance /app/logs /app/run && \
+    chmod 770 /app/start.sh
 
 # Expose port
 EXPOSE 5000

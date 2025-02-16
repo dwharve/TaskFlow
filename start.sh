@@ -14,23 +14,28 @@ cleanup() {
     if [ -f /app/run/flask.pid ]; then
         kill $(cat /app/run/flask.pid) 2>/dev/null
     fi
+    rm -f /app/run/*.pid
     exit 0
 }
 
 # Set up trap for cleanup
 trap cleanup SIGTERM SIGINT SIGQUIT
 
-# Initialize the database first and wait for it to complete
+# Create necessary files with correct permissions
+touch /app/run/flask.pid /app/run/scheduler.pid
+chown appuser:appgroup /app/run/*.pid
+chmod 660 /app/run/*.pid
+
+# Switch to appuser for all operations
+exec setpriv --reuid=appuser --regid=appgroup --init-groups bash << 'EOF'
+
+# Initialize the database
 echo "Initializing database..."
 python -c "from app import app; from database import init_db; init_db(app)"
 
-# Ensure database file has correct permissions after initialization
-chown appuser:appgroup /app/instance/database.db
-chmod 660 /app/instance/database.db
-
-# Start the Flask app first and wait for it to be ready
+# Start the Flask app
 echo "Starting Flask application..."
-su -s /bin/bash appuser -c "python app.py & echo \$! > /app/run/flask.pid"
+python app.py & echo $! > /app/run/flask.pid
 
 # Wait for database to be accessible (max 30 seconds)
 MAX_TRIES=30
@@ -47,16 +52,17 @@ done
 
 if [ $COUNTER -eq $MAX_TRIES ]; then
     echo "Database failed to become ready in time"
-    cleanup
     exit 1
 fi
 
 # Start the scheduler process
 echo "Starting scheduler process..."
-su -s /bin/bash appuser -c "python run_scheduler.py & echo \$! > /app/run/scheduler.pid"
+python run_scheduler.py & echo $! > /app/run/scheduler.pid
 
 # Wait for either process to exit
 wait -n $(cat /app/run/flask.pid) $(cat /app/run/scheduler.pid)
+
+EOF
 
 # Cleanup and exit
 cleanup
