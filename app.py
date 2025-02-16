@@ -77,11 +77,11 @@ def initialize_database(app):
             if not migrations_initialized:
                 logger.info("Migrations not properly initialized")
                 try:
-                    # Remove migrations directory if it exists but is not properly initialized
-                    if os.path.exists('migrations'):
-                        import shutil
-                        logger.info("Removing existing migrations directory")
-                        shutil.rmtree('migrations')
+                    # Initialize migrations if they don't exist
+                    if not os.path.exists('migrations'):
+                        logger.info("Creating migrations directory")
+                        os.makedirs('migrations', exist_ok=True)
+                        os.chmod('migrations', 0o777)
                     
                     # Initialize migrations
                     logger.info("Initializing migrations")
