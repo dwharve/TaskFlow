@@ -148,13 +148,8 @@ class TaskScheduler:
         self.app = app
         
         # Detect if this is a worker process by checking if we're in a Gunicorn worker
-        # When running under Gunicorn, the 'SERVER_SOFTWARE' env var will be set
-        # and we'll have specific Gunicorn env vars
-        is_worker = (
-            'gunicorn' in os.environ.get('SERVER_SOFTWARE', '').lower() or
-            bool(os.environ.get('GUNICORN_CONFIG', '')) or
-            bool(os.environ.get('GUNICORN_PID', ''))
-        )
+        # The main Gunicorn process will have SERVER_SOFTWARE but not GUNICORN_FD
+        is_worker = bool(os.environ.get('GUNICORN_FD', ''))
         
         if not is_worker:
             logger.info("Initializing scheduler in main process")
@@ -233,8 +228,9 @@ class TaskScheduler:
         """Stop the scheduler"""
         logger.info("Stopping scheduler")
         try:
-            self.scheduler.shutdown()
-            logger.info("Scheduler shutdown complete")
+            if self.scheduler is not None:
+                self.scheduler.shutdown()
+                logger.info("Scheduler shutdown complete")
             
             # Stop any running tasks
             running_tasks = list(self._running_tasks.items())
@@ -244,7 +240,8 @@ class TaskScheduler:
                 self.cleanup_task_resources(task_id)
         except Exception as e:
             logger.error(f"Error during scheduler shutdown: {str(e)}")
-            raise
+            # Don't raise the error since this is called during shutdown
+            pass
     
     def schedule_task(self, task: Task):
         """Schedule a task to run
