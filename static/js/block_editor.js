@@ -474,7 +474,8 @@ async function editBlockParameters(button) {
             const label = document.createElement('label');
             label.className = 'form-label';
             label.htmlFor = `param_${name}`;
-            label.textContent = config.description;
+            // Use the parameter name as the label, properly formatted
+            label.textContent = name.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
             
             let input;
             if (config.type === 'boolean') {
@@ -513,6 +514,12 @@ async function editBlockParameters(button) {
                 helpText.id = `help_${name}`;
                 helpText.textContent = config.description;
                 formGroup.appendChild(helpText);
+            }
+            
+            // Add required indicator if parameter is required
+            if (config.required) {
+                label.innerHTML += ' <span class="text-danger">*</span>';
+                input.setAttribute('required', 'required');
             }
             
             container.appendChild(formGroup);
