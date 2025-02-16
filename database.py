@@ -4,8 +4,16 @@ from sqlalchemy.pool import QueuePool
 from contextlib import contextmanager
 import os
 
-# Create engine
-DATABASE_URL = os.environ.get('DATABASE_URL', 'sqlite:///instance/database.db')
+# Create absolute path for database
+DATABASE_PATH = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'instance', 'database.db')
+DATABASE_DIR = os.path.dirname(DATABASE_PATH)
+
+# Ensure database directory exists
+os.makedirs(DATABASE_DIR, exist_ok=True)
+os.chmod(DATABASE_DIR, 0o777)
+
+# Create database URL
+DATABASE_URL = os.environ.get('DATABASE_URL', f'sqlite:///{DATABASE_PATH}')
 
 # Configure engine based on database type
 if DATABASE_URL.startswith('sqlite'):

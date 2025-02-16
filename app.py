@@ -44,7 +44,7 @@ from scheduler import scheduler  # Import scheduler before using it
 app = Flask(__name__)
 
 # Configure app
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///instance/database.db')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', f'sqlite:///{os.path.join(os.path.abspath(os.path.dirname(__file__)), "instance", "database.db")}')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 def initialize_database(app):
@@ -57,6 +57,13 @@ def initialize_database(app):
         instance_path = os.path.dirname(app.config['SQLALCHEMY_DATABASE_URI'].replace('sqlite:///', ''))
         os.makedirs(instance_path, exist_ok=True)
         os.chmod(instance_path, 0o777)  # Ensure directory is writable
+        
+        # Touch the database file to ensure it exists and has proper permissions
+        db_path = app.config['SQLALCHEMY_DATABASE_URI'].replace('sqlite:///', '')
+        if not os.path.exists(db_path):
+            with open(db_path, 'a'):
+                pass
+            os.chmod(db_path, 0o666)  # Make database file writable
         
         # Initialize migrations directory if it doesn't exist
         if not os.path.exists('migrations'):

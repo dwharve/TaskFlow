@@ -6,8 +6,14 @@ export FLASK_ENV=production
 export PYTHONPATH=$PYTHONPATH:$(pwd)
 
 # Ensure instance directory exists with proper permissions
-mkdir -p /app/instance
-chmod 777 /app/instance
+INSTANCE_DIR="/app/instance"
+mkdir -p "$INSTANCE_DIR"
+chmod 777 "$INSTANCE_DIR"
+
+# Create empty database file if it doesn't exist
+DB_FILE="$INSTANCE_DIR/database.db"
+touch "$DB_FILE"
+chmod 666 "$DB_FILE"
 
 # Initialize the database with migrations
 python -c "from app import app, initialize_database; initialize_database(app)"
