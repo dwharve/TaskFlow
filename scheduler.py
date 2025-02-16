@@ -279,27 +279,60 @@ class TaskScheduler:
             
         logger.info(f"Initiating task run for task {task_id}")
         
-        # Check if task is already running by publishing a start request
+        # Check if task is already running locally
+        with self._cleanup_lock:
+            if task_id in self._running_tasks:
+                logger.info(f"Task {task_id} is already running locally")
+                return
+        
+        # Create an event to wait for acknowledgments
+        ack_event = threading.Event()
+        ack_received = False
+        
+        def check_ack():
+            nonlocal ack_received
+            try:
+                while True:
+                    try:
+                        message = self._task_queues[TASK_START_ACK_TOPIC].get_nowait()
+                        data = message.data
+                        if data['task_id'] == task_id and data['worker_id'] != self._worker_id:
+                            logger.info(f"Received ACK for task {task_id} from worker {data['worker_id']}")
+                            ack_received = True
+                            ack_event.set()
+                            return
+                    except queue.Empty:
+                        break
+            except Exception as e:
+                logger.error(f"Error checking ACKs: {str(e)}")
+        
+        # Start a thread to check for acknowledgments
+        ack_thread = threading.Thread(target=check_ack)
+        ack_thread.daemon = True
+        ack_thread.start()
+        
+        # Publish start request
         pubsub.publish(TASK_START_TOPIC, task_id)
         
-        # Brief wait to allow other workers to respond
-        threading.Event().wait(0.5)  # Increased wait time for better coordination
+        # Wait for acknowledgments with timeout
+        ack_event.wait(0.5)  # Wait up to 0.5 seconds for ACKs
         
-        # If we haven't received an ACK, start the task
-        with self._cleanup_lock:
-            if task_id not in self._running_tasks:
-                logger.info(f"No other worker is running task {task_id}, starting it")
-                thread = threading.Thread(
-                    target=self._run_task_thread,
-                    args=(task_id,),
-                    name=f"Task-{task_id}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-                )
-                thread.daemon = True
-                self._running_tasks[task_id] = thread
-                thread.start()
-                logger.info(f"Started thread {thread.name} for task {task_id}")
-            else:
-                logger.info(f"Task {task_id} is already running")
+        # If no ACK received, start the task
+        if not ack_received:
+            with self._cleanup_lock:
+                if task_id not in self._running_tasks:
+                    logger.info(f"No other worker is running task {task_id}, starting it")
+                    thread = threading.Thread(
+                        target=self._run_task_thread,
+                        args=(task_id,),
+                        name=f"Task-{task_id}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+                    )
+                    thread.daemon = True
+                    self._running_tasks[task_id] = thread
+                    thread.start()
+                    logger.info(f"Started thread {thread.name} for task {task_id}")
+                else:
+                    logger.info(f"Task {task_id} is already running locally")
     
     def cleanup_task_resources(self, task_id):
         """Clean up all resources associated with a task"""

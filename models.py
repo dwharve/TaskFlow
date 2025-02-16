@@ -12,6 +12,9 @@ import time
 # Initialize SQLAlchemy with thread-safe session
 db = SQLAlchemy()
 
+# Configure logger
+logger = logging.getLogger(__name__)
+
 # Models
 class User(UserMixin, db.Model):
     __tablename__ = 'users'
