@@ -13,10 +13,9 @@ from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import and_
 from flask import Flask
 
-from models import Task, db
+from models import Task, db, TaskLock
 from blocks.manager import manager
 from pubsub import pubsub, Message
-from locks import TaskLock
 
 logger = logging.getLogger(__name__)
 
