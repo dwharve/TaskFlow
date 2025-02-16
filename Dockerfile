@@ -34,47 +34,24 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Set environment variables for the application
 ENV FLASK_APP=app.py \
     FLASK_ENV=production \
-    DATABASE_URL=sqlite:///database.db \
+    DATABASE_URL=sqlite:///instance/database.db \
     PYTHONPATH=/app \
     LOG_LEVEL=INFO \
     WORKERS=4 \
     TIMEOUT=120
 
-# Create app group and users
-RUN groupadd -r appgroup && \
-    useradd -r -g appgroup flaskuser && \
-    useradd -r -g appgroup scheduleruser
-
-# Create necessary directories with appropriate permissions
-RUN mkdir -p /app/instance /app/logs && \
-    chown -R flaskuser:appgroup /app && \
-    chmod -R 750 /app && \
-    chmod 770 /app/instance /app/logs
-
 # Copy application files
 COPY . .
 
-# Set specific permissions for shared resources
-RUN chown -R flaskuser:appgroup /app/instance && \
-    chmod 770 /app/instance && \
-    chown flaskuser:appgroup /app/database.db 2>/dev/null || true && \
-    chmod 660 /app/database.db 2>/dev/null || true && \
-    chmod 750 /app/*.py && \
-    chmod 770 /app/start.sh
-
-# Create a directory for process management
-RUN mkdir -p /app/run && \
-    chown -R flaskuser:appgroup /app/run && \
-    chmod 770 /app/run
-
-# Create pid files with correct permissions
-RUN touch /app/run/flask.pid /app/run/scheduler.pid && \
-    chown flaskuser:appgroup /app/run/flask.pid && \
-    chown scheduleruser:appgroup /app/run/scheduler.pid && \
-    chmod 660 /app/run/*.pid
+# Create app group and users
+RUN groupadd -r appgroup && \
+    useradd -r -g appgroup appuser && \
+    mkdir -p /app/instance /app/logs && \
+    chown -R appuser:appgroup /app && \
+    chmod +x /app/start.sh
 
 # Switch to non-root user - will be overridden by start.sh for specific processes
-USER flaskuser
+USER appuser
 
 # Expose port
 EXPOSE 5000
