@@ -42,7 +42,7 @@ ENV FLASK_APP=app.py \
 
 # Install required system packages
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends util-linux && \
+    apt-get install -y --no-install-recommends util-linux sqlite3 && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy application files
@@ -55,7 +55,13 @@ RUN mkdir -p /app/instance /app/logs /app/run && \
     chown -R appuser:appgroup /app && \
     chmod -R 750 /app && \
     chmod 770 /app/instance /app/logs /app/run && \
-    chmod 770 /app/start.sh
+    chmod 770 /app/start.sh && \
+    # Create an empty database file with correct permissions
+    touch /app/instance/database.db && \
+    chown appuser:appgroup /app/instance/database.db && \
+    chmod 660 /app/instance/database.db && \
+    # Initialize SQLite database with correct permissions
+    sqlite3 /app/instance/database.db ".databases"
 
 # Expose port
 EXPOSE 5000

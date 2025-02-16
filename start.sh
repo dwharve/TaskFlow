@@ -26,6 +26,13 @@ touch /app/run/flask.pid /app/run/scheduler.pid
 chown appuser:appgroup /app/run/*.pid
 chmod 660 /app/run/*.pid
 
+# Ensure database directory and file have correct permissions
+chown -R appuser:appgroup /app/instance
+chmod 770 /app/instance
+touch /app/instance/database.db
+chown appuser:appgroup /app/instance/database.db
+chmod 660 /app/instance/database.db
+
 # Switch to appuser for all operations
 exec setpriv --reuid=appuser --regid=appgroup --init-groups bash << 'EOF'
 
