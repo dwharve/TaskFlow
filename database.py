@@ -1,49 +1,41 @@
-from sqlalchemy import create_engine
-from sqlalchemy.orm import scoped_session, sessionmaker
-from sqlalchemy.pool import QueuePool
 from contextlib import contextmanager
-import os
+from models import db
+import threading
+from sqlalchemy.orm import scoped_session, sessionmaker
+from sqlalchemy import event
 
-# Create absolute path for database
-DATABASE_PATH = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'instance', 'database.db')
-DATABASE_DIR = os.path.dirname(DATABASE_PATH)
-
-# Ensure database directory exists
-os.makedirs(DATABASE_DIR, exist_ok=True)
-os.chmod(DATABASE_DIR, 0o777)
-
-# Create database URL
-DATABASE_URL = os.environ.get('DATABASE_URL', f'sqlite:///{DATABASE_PATH}')
-
-# Configure engine based on database type
-if DATABASE_URL.startswith('sqlite'):
-    # SQLite specific configuration
-    engine = create_engine(
-        DATABASE_URL,
-        connect_args={'check_same_thread': False}  # Required for SQLite
-    )
-else:
-    # PostgreSQL configuration
-    engine = create_engine(
-        DATABASE_URL,
-        poolclass=QueuePool,
-        pool_size=20,
-        max_overflow=10,
-        pool_timeout=30,
-        pool_pre_ping=True
-    )
-
-# Create session factory
-Session = scoped_session(sessionmaker(bind=engine))
+# Thread local storage for database sessions
+thread_local = threading.local()
 
 def get_session():
-    """Get the current session"""
-    return Session
+    """Get or create a scoped database session for the current thread"""
+    if not hasattr(thread_local, 'session'):
+        # Create a new scoped session with SQLAlchemy 2.0 compatible settings
+        session_factory = sessionmaker(
+            bind=db.engine,
+            autocommit=False,
+            autoflush=False,
+            expire_on_commit=False  # Prevent detached instance errors
+        )
+        thread_local.session = scoped_session(session_factory)
+        
+        # Set up session events for cleanup
+        @event.listens_for(thread_local.session, 'after_commit')
+        def after_commit(session):
+            """Expire all instances after commit to ensure fresh data"""
+            session.expire_all()
+        
+        @event.listens_for(thread_local.session, 'after_rollback')
+        def after_rollback(session):
+            """Expire all instances after rollback"""
+            session.expire_all()
+    
+    return thread_local.session
 
 @contextmanager
 def session_scope():
     """Provide a transactional scope around a series of operations."""
-    session = Session()
+    session = get_session()
     try:
         yield session
         session.commit()
@@ -51,20 +43,6 @@ def session_scope():
         session.rollback()
         raise
     finally:
-        session.close()
-
-def init_db():
-    """Initialize the database"""
-    from models import Base, Settings
-    
-    # Create all tables
-    Base.metadata.create_all(bind=engine)
-    
-    # Initialize with session scope to ensure proper transaction handling
-    with session_scope() as session:
-        # Create default settings if they don't exist
-        if not session.query(Settings).filter_by(key='SECRET_KEY').first():
-            import secrets
-            setting = Settings(key='SECRET_KEY', value=secrets.token_hex(32))
-            session.add(setting)
-            session.commit() 
+        # Just expire the objects but don't remove the session
+        # This allows the session to be reused within the same request
+        session.expire_all() 

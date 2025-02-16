@@ -136,6 +136,8 @@ class BlockManager:
         try:
             if block_type == "action":
                 result = await block_instance.execute(input_data, block_params)
+            elif block_type == "input":
+                result = await block_instance.collect(input_data, block_params)
             else:
                 result = await block_instance.process(input_data, block_params)
             return True, result

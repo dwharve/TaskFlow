@@ -7,6 +7,13 @@ const MIN_ZOOM = 0.4;  // Minimum zoom level (40%)
 const MAX_ZOOM = 2;    // Maximum zoom level (200%)
 const ZOOM_SPEED = 0.1; // How much to zoom per scroll
 
+// Initialize global variables
+window.jsPlumbInstance = null;
+window.blockCounter = 0;
+window.blocks = new Map();  // id -> {element, data}
+window.currentEditingBlock = null;
+window.blockParamsModal = null;
+
 // Calculate block layout dimensions
 function calculateBlocksBoundingBox(blocks) {
     if (blocks.length === 0) return { minX: 2400, minY: 2400, maxX: 2600, maxY: 2600 };
@@ -32,21 +39,11 @@ async function loadBlocksFromApi() {
     if (!taskId) return;  // Not editing an existing task
     
     try {
-        const response = await fetch(`/api/tasks/${taskId}/blocks`, {
-            headers: {
-                'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').content
-            }
-        });
-        
-        if (!response.ok) {
-            throw new Error('Failed to load block data');
-        }
-        
-        const blocksData = await response.json();
-        loadExistingBlocks(blocksData);
+        const { blocks, connections } = await loadTaskBlocks(taskId);
+        loadExistingBlocks({ blocks, connections });
     } catch (error) {
         console.error('Error loading blocks:', error);
-        showToast('Failed to load block data', 'danger');
+        showToast(error.message || 'Failed to load block data', 'danger');
     }
 }
 
@@ -441,17 +438,19 @@ async function editBlockParameters(button) {
     window.currentEditingBlock = window.blocks.get(blockId);
     
     try {
+        // Get parameters from API
         const response = await fetch(`/api/blocks/${blockType}/${blockName}/parameters`, {
             headers: {
                 'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').content
             }
         });
-        if (!response.ok) throw new Error('Failed to load parameters');
+        
+        if (!response.ok) {
+            throw new Error('Failed to load parameters');
+        }
         
         const data = await response.json();
-        if (data.status !== 'success' || !data.parameters) {
-            throw new Error('Invalid parameter data received');
-        }
+        const parameters = data.parameters || {};
         
         // Set block name in modal
         const blockNameInput = document.getElementById('block_name');
@@ -470,15 +469,14 @@ async function editBlockParameters(button) {
         container.appendChild(blockInfo);
         
         // Add parameters
-        for (const [name, config] of Object.entries(data.parameters)) {
+        for (const [name, config] of Object.entries(parameters)) {
             const formGroup = document.createElement('div');
             formGroup.className = 'mb-3';
             
             const label = document.createElement('label');
             label.className = 'form-label';
             label.htmlFor = `param_${name}`;
-            // Use the parameter name as the label, properly formatted
-            label.textContent = name.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+            label.textContent = config.description;
             
             let input;
             if (config.type === 'boolean') {
@@ -519,12 +517,6 @@ async function editBlockParameters(button) {
                 formGroup.appendChild(helpText);
             }
             
-            // Add required indicator if parameter is required
-            if (config.required) {
-                label.innerHTML += ' <span class="text-danger">*</span>';
-                input.setAttribute('required', 'required');
-            }
-            
             container.appendChild(formGroup);
         }
         
@@ -533,7 +525,7 @@ async function editBlockParameters(button) {
         
     } catch (error) {
         console.error('Error loading parameters:', error);
-        alert('Failed to load block parameters');
+        showToast(error.message || 'Failed to load block parameters', 'danger');
     }
 }
 
@@ -582,15 +574,11 @@ async function saveBlockParameters() {
         });
         if (!response.ok) throw new Error('Failed to load parameters');
         
-        const data = await response.json();
-        if (data.status !== 'success' || !data.parameters) {
-            throw new Error('Invalid parameter data received');
-        }
-
+        const parameterDefs = await response.json();
         let isValid = true;
         let firstInvalidParam = null;
 
-        for (const [paramName, config] of Object.entries(data.parameters)) {
+        for (const [paramName, config] of Object.entries(parameterDefs)) {
             if (config.required && (parameters[paramName] === undefined || parameters[paramName] === null || 
                 (typeof parameters[paramName] === 'string' && parameters[paramName].trim() === ''))) {
                 isValid = false;
@@ -618,22 +606,22 @@ async function saveBlockParameters() {
         if (editButton) {
             editButton.focus();
         }
-        
     } catch (error) {
-        console.error('Error saving parameters:', error);
-        showToast('Failed to save parameters: ' + error.message, 'error');
+        console.error('Error validating parameters:', error);
+        showToast('Failed to validate parameters', 'danger');
+        blockValidationCache.set(window.currentEditingBlock.data.id, false);
     }
 }
 
 // Update loadExistingBlocks to handle centered positioning
-function loadExistingBlocks(blocksData) {
+function loadExistingBlocks({ blocks, connections }) {
     if (!window.jsPlumbInstance) return;
     
     // Create a mapping of database block IDs to generated IDs
     const blockIdMap = new Map();
     
     // Calculate bounding box of existing blocks
-    const bbox = calculateBlocksBoundingBox(blocksData.blocks);
+    const bbox = calculateBlocksBoundingBox(blocks);
     const centerX = (bbox.minX + bbox.maxX) / 2;
     const centerY = (bbox.minY + bbox.maxY) / 2;
     
@@ -642,7 +630,7 @@ function loadExistingBlocks(blocksData) {
     const offsetY = 2500 - centerY;
     
     // First create all blocks
-    for (const blockData of blocksData.blocks) {
+    for (const blockData of blocks) {
         const generatedId = `block_${++window.blockCounter}`;
         blockIdMap.set(blockData.id, generatedId);
         
@@ -733,7 +721,7 @@ function loadExistingBlocks(blocksData) {
     }
     
     // Then create connections
-    for (const connData of blocksData.connections) {
+    for (const connData of connections) {
         const sourceId = blockIdMap.get(connData.source);
         const targetId = blockIdMap.get(connData.target);
         
@@ -864,31 +852,20 @@ document.addEventListener('DOMContentLoaded', function() {
                     method: 'POST',
                     body: formData,
                     headers: {
-                        'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').content,
-                        // Don't set Content-Type header - let the browser set it with the correct boundary for FormData
+                        'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').content
                     }
                 });
 
-                let data;
-                try {
-                    data = await response.json();
-                } catch (e) {
-                    throw new Error('Invalid response from server');
-                }
-
-                if (!response.ok) {
-                    throw new Error(data.error || 'Failed to save task');
-                }
-
-                if (data.status === 'success') {
-                    // Handle successful response
-                    showToast('Task saved successfully', 'success');
-                    // Redirect to tasks page after a short delay
+                const data = await handleApiResponse(response);
+                
+                // Handle successful response
+                showToast(data.message || 'Task saved successfully', 'success');
+                
+                // Redirect to tasks page after a short delay
+                if (data.redirect) {
                     setTimeout(() => {
-                        window.location.href = '/tasks';
+                        window.location.href = data.redirect;
                     }, 1000);
-                } else {
-                    throw new Error(data.error || 'Failed to save task');
                 }
             } catch (error) {
                 console.error('Error saving task:', error);
@@ -903,7 +880,7 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 document.addEventListener('DOMContentLoaded', function() {
-    // Wait for jsPlumb to be fully loaded
+    // Initialize jsPlumb
     if (typeof jsPlumb !== 'undefined') {
         window.jsPlumbInstance = jsPlumb.getInstance({
             Container: 'blockCanvas',
@@ -930,7 +907,19 @@ document.addEventListener('DOMContentLoaded', function() {
         initializePanning();
         
         // Load existing blocks if editing
-        loadBlocksFromApi();
+        const taskId = document.getElementById('taskId')?.value;
+        if (taskId) {
+            loadBlocksFromApi();
+        }
+    }
+    
+    // Initialize block parameters modal
+    const blockParamsModalEl = document.getElementById('blockParamsModal');
+    if (blockParamsModalEl) {
+        window.blockParamsModal = new bootstrap.Modal(blockParamsModalEl, {
+            backdrop: true,
+            keyboard: true
+        });
     }
 });
 

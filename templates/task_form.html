@@ -161,46 +161,8 @@
 </div>
 {% endblock %} 
 {% block scripts %}
-<!-- jsPlumb -->
+<!-- Load dependencies first -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jsPlumb/2.15.6/js/jsplumb.min.js"></script>
-<!-- Schedule JS -->
-<script src="{{ url_for('static', filename='js/schedule.js') }}"></script>
-<!-- Block Editor JS -->
-<script>
-// Initialize global variables
-window.jsPlumbInstance = null;
-window.blockCounter = 0;
-window.blocks = new Map();  // id -> {element, data}
-window.currentEditingBlock = null;
-window.blockParamsModal = null;
-
-document.addEventListener('DOMContentLoaded', function() {
-    // Wait for jsPlumb to be fully loaded
-    if (typeof jsPlumb !== 'undefined') {
-        window.jsPlumbInstance = jsPlumb.getInstance({
-            Container: 'blockCanvas',
-            ConnectionsDetachable: true,
-            Connector: ['Bezier', { curviness: 50 }],
-            Endpoint: ['Dot', { radius: 5 }],
-            PaintStyle: { stroke: '#6c757d', strokeWidth: 2 },
-            HoverPaintStyle: { stroke: '#007bff', strokeWidth: 3 },
-            EndpointStyle: { fill: '#6c757d', stroke: '#6c757d' },
-            EndpointHoverStyle: { fill: '#007bff', stroke: '#007bff' }
-        });
-        
-        // Make existing block nodes draggable
-        window.jsPlumbInstance.draggable(document.querySelectorAll('.block-node'), {
-            grid: [10, 10]
-        });
-        
-        // Load existing blocks if editing
-        const blocksDataElement = document.getElementById('blocksData');
-        if (blocksDataElement && blocksDataElement.value) {
-            const blocksData = JSON.parse(blocksDataElement.value);
-            loadExistingBlocks(blocksData);
-        }
-    }
-});
-</script>
+<script src="{{ url_for('static', filename='js/api.js') }}"></script>
 <script src="{{ url_for('static', filename='js/block_editor.js') }}"></script>
 {% endblock %} 

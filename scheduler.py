@@ -5,7 +5,6 @@ from typing import Optional, Dict, Any
 import threading
 import traceback
 import json
-import queue
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -14,14 +13,8 @@ from flask import Flask
 
 from models import Task, db
 from blocks.manager import manager
-from pubsub import pubsub, Message
 
 logger = logging.getLogger(__name__)
-
-# Topics for pub/sub communication
-TASK_START_TOPIC = "task_start"
-TASK_COMPLETE_TOPIC = "task_complete"
-TASK_FAILED_TOPIC = "task_failed"
 
 class TaskScheduler:
     """Scheduler for running tasks on a schedule"""
@@ -32,58 +25,6 @@ class TaskScheduler:
         self.scheduler = BackgroundScheduler()
         self.app = None
         self._cleanup_lock = threading.Lock()
-        self._task_queues: Dict[str, queue.Queue] = {}
-        self._setup_pubsub()
-    
-    def _setup_pubsub(self):
-        """Setup pub/sub subscriptions"""
-        # Subscribe to task completion events
-        self._task_queues[TASK_COMPLETE_TOPIC] = pubsub.subscribe(TASK_COMPLETE_TOPIC)
-        self._task_queues[TASK_FAILED_TOPIC] = pubsub.subscribe(TASK_FAILED_TOPIC)
-        
-        # Start listener thread
-        self._listener_thread = threading.Thread(target=self._listen_for_events, daemon=True)
-        self._listener_thread.start()
-    
-    def _listen_for_events(self):
-        """Listen for task events from other workers"""
-        while True:
-            try:
-                # Check complete queue
-                try:
-                    message = self._task_queues[TASK_COMPLETE_TOPIC].get_nowait()
-                    task_id = message.data
-                    logger.info(f"Received task completion notification for task {task_id}")
-                    self._cleanup_task(task_id)
-                except queue.Empty:
-                    pass
-                
-                # Check failed queue
-                try:
-                    message = self._task_queues[TASK_FAILED_TOPIC].get_nowait()
-                    task_id = message.data
-                    logger.info(f"Received task failure notification for task {task_id}")
-                    self._cleanup_task(task_id)
-                except queue.Empty:
-                    pass
-                
-                # Sleep briefly to prevent tight loop
-                threading.Event().wait(0.1)
-                
-            except Exception as e:
-                logger.error(f"Error in event listener: {str(e)}")
-                logger.error(traceback.format_exc())
-    
-    def _cleanup_task(self, task_id: int):
-        """Clean up after task completion
-        
-        Args:
-            task_id: ID of completed task
-        """
-        with self._cleanup_lock:
-            if task_id in self._running_tasks:
-                thread = self._running_tasks.pop(task_id)
-                logger.info(f"Cleaned up task {task_id}. Thread alive: {thread.is_alive()}")
     
     def init_app(self, app: Flask):
         """Initialize the scheduler with Flask app
@@ -178,18 +119,20 @@ class TaskScheduler:
             task: Task to schedule
         """
         logger.info(f"Scheduling task {task.id} with schedule: {task.schedule}")
+        
+        # Always remove any existing job first
+        try:
+            self.remove_task(task)
+            logger.info(f"Removed existing schedule for task {task.id}")
+        except Exception as e:
+            logger.debug(f"No existing schedule found for task {task.id}: {str(e)}")
+        
+        # Only schedule if task has a schedule
         if not task.schedule:
             logger.info(f"Task {task.id} has no schedule, skipping")
             return
         
         try:
-            # Remove any existing job
-            try:
-                self.scheduler.remove_job(str(task.id))
-                logger.info(f"Successfully removed existing job for task {task.id}")
-            except Exception as e:
-                logger.debug(f"No existing job found for task {task.id}: {str(e)}")
-            
             # Parse cron schedule for logging
             trigger = CronTrigger.from_crontab(task.schedule)
             next_run = trigger.get_next_fire_time(None, datetime.now())
@@ -229,6 +172,7 @@ class TaskScheduler:
                 
         except Exception as e:
             logger.debug(f"Error removing task {task.id} (may not have been scheduled): {str(e)}")
+            raise
     
     def run_task(self, task_id: int):
         """Run a task
@@ -241,13 +185,6 @@ class TaskScheduler:
             return
             
         logger.info(f"Initiating task run for task {task_id}")
-        
-        # Check if task is already running by publishing a start request
-        # Other workers will respond if they're already running it
-        pubsub.publish(TASK_START_TOPIC, task_id)
-        
-        # Brief wait to allow other workers to respond
-        threading.Event().wait(0.1)
         
         # Check if task is already running
         if task_id in self._running_tasks:
@@ -288,10 +225,11 @@ class TaskScheduler:
             logger.error(f"Traceback: {traceback.format_exc()}")
             try:
                 with self.app.app_context():
-                    task.status = 'failed'
-                    db.session.commit()
-                    logger.info(f"Updated task {task_id} status to 'failed'")
-                pubsub.publish(TASK_FAILED_TOPIC, task_id)
+                    task = Task.query.get(task_id)
+                    if task:
+                        task.status = 'failed'
+                        db.session.commit()
+                        logger.info(f"Updated task {task_id} status to 'failed'")
             except Exception as inner_e:
                 logger.error(f"Failed to update task status: {str(inner_e)}")
     
@@ -301,14 +239,16 @@ class TaskScheduler:
             if task_id in self._running_tasks:
                 thread = self._running_tasks.pop(task_id)
                 try:
-                    # Give the thread a chance to finish gracefully
-                    if thread.is_alive():
-                        thread.join(timeout=1)
+                    # Only try to join if this isn't the current thread
+                    current_thread = threading.current_thread()
+                    if thread is not current_thread:
+                        if thread.is_alive():
+                            thread.join(timeout=1)
+                        logger.info(f"Successfully joined thread for task {task_id}")
                 except Exception as e:
                     logger.error(f"Error while joining task thread {task_id}: {str(e)}")
                 finally:
                     # Always remove from running tasks, even if join failed
-                    del self._running_tasks[task_id]
                     logger.info(f"Cleaned up resources for task {task_id}")
     
     def _run_task_thread(self, task_id: int):
@@ -330,11 +270,10 @@ class TaskScheduler:
                 # Execute task
                 asyncio.run(self._execute_task(task))
                 
-                # Update status and notify other workers
+                # Update status
                 task.status = 'completed'
                 task.last_run = datetime.utcnow()
                 db.session.commit()
-                pubsub.publish(TASK_COMPLETE_TOPIC, task_id)
                 logger.info(f"Task {task_id} completed successfully")
                 
         except Exception as e:
@@ -345,7 +284,6 @@ class TaskScheduler:
                     task = Task.query.get(task_id)
                     if task:
                         task.update_status('failed')
-                pubsub.publish(TASK_FAILED_TOPIC, task_id)
             except Exception as inner_e:
                 logger.error(f"Failed to update task status: {str(inner_e)}")
             
