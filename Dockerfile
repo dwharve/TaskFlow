@@ -61,13 +61,7 @@ COPY . .
 
 # Create instance directory for SQLite database and log directory with proper permissions
 RUN mkdir -p /app/instance /var/log && \
-    chown -R nobody:nobody /app /var/log
-
-# Make the script executable
-RUN chmod +x /app/start.sh
-
-# Switch to non-root user
-USER nobody
+chmod +x /app/start.sh
 
 # Expose port
 EXPOSE 5000

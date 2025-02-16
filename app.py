@@ -17,80 +17,6 @@ from wtforms.validators import DataRequired, Length, EqualTo
 from sqlalchemy import inspect
 import flask_migrate
 
-# Common response helpers
-def api_response(
-    message: str,
-    status: str = 'success',
-    code: int = 200,
-    **kwargs: Any
-) -> Tuple[Dict[str, Any], int]:
-    """Standardized API response helper
-    
-    Args:
-        message: Response message
-        status: Response status ('success' or 'error')
-        code: HTTP status code
-        **kwargs: Additional key-value pairs to include in response
-        
-    Returns:
-        Tuple of (response dict, status code)
-    """
-    response = {
-        'status': status,
-        'message': message,
-        **kwargs
-    }
-    return jsonify(response), code
-
-def error_response(message: str, code: int = 400) -> Tuple[Dict[str, Any], int]:
-    """Standardized error response helper
-    
-    Args:
-        message: Error message
-        code: HTTP status code
-        
-    Returns:
-        Tuple of (error response dict, status code)
-    """
-    return api_response(message, status='error', code=code)
-
-def task_access_required(f):
-    """Decorator to check if user has access to task
-    
-    Checks if the task exists and belongs to the current user.
-    Task ID should be the first argument after self/cls.
-    """
-    @wraps(f)
-    def decorated_function(task_id: int, *args: Any, **kwargs: Any) -> Any:
-        with session_scope() as session:
-            task = session.get(Task, task_id)
-            if not task:
-                return error_response('Task not found', 404)
-            if task.user_id != current_user.id:
-                if request.is_json:
-                    return error_response('Access denied', 403)
-                flash('Access denied.', 'danger')
-                return redirect(url_for('tasks'))
-            return f(task, *args, **kwargs)
-    return decorated_function
-
-def with_transaction(f):
-    """Decorator to handle database transactions
-    
-    Provides a session object as first argument to the decorated function.
-    Handles commit/rollback automatically.
-    """
-    @wraps(f)
-    def decorated_function(*args: Any, **kwargs: Any) -> Any:
-        with session_scope() as session:
-            try:
-                result = f(session, *args, **kwargs)
-                return result
-            except Exception as e:
-                logger.error(f"Transaction error: {str(e)}", exc_info=True)
-                raise
-    return decorated_function
-
 # Configure logging before importing models
 log_level = os.environ.get('LOG_LEVEL', 'INFO')
 logging.basicConfig(
@@ -120,12 +46,6 @@ app = Flask(__name__)
 # Configure app
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///instance/database.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
-@app.teardown_appcontext
-def remove_session(exception=None):
-    """Remove the session at the end of the request"""
-    session = get_session()
-    session.remove()
 
 def initialize_database(app):
     """Initialize database, create tables, and handle migrations"""
@@ -211,6 +131,86 @@ login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
 csrf = CSRFProtect(app)  # Initialize CSRF protection
+
+# Common response helpers
+def api_response(
+    message: str,
+    status: str = 'success',
+    code: int = 200,
+    **kwargs: Any
+) -> Tuple[Dict[str, Any], int]:
+    """Standardized API response helper
+    
+    Args:
+        message: Response message
+        status: Response status ('success' or 'error')
+        code: HTTP status code
+        **kwargs: Additional key-value pairs to include in response
+        
+    Returns:
+        Tuple of (response dict, status code)
+    """
+    response = {
+        'status': status,
+        'message': message,
+        **kwargs
+    }
+    return jsonify(response), code
+
+def error_response(message: str, code: int = 400) -> Tuple[Dict[str, Any], int]:
+    """Standardized error response helper
+    
+    Args:
+        message: Error message
+        code: HTTP status code
+        
+    Returns:
+        Tuple of (error response dict, status code)
+    """
+    return api_response(message, status='error', code=code)
+
+def task_access_required(f):
+    """Decorator to check if user has access to task
+    
+    Checks if the task exists and belongs to the current user.
+    Task ID should be the first argument after self/cls.
+    """
+    @wraps(f)
+    def decorated_function(task_id: int, *args: Any, **kwargs: Any) -> Any:
+        with session_scope() as session:
+            task = session.get(Task, task_id)
+            if not task:
+                return error_response('Task not found', 404)
+            if task.user_id != current_user.id:
+                if request.is_json:
+                    return error_response('Access denied', 403)
+                flash('Access denied.', 'danger')
+                return redirect(url_for('tasks'))
+            return f(task, *args, **kwargs)
+    return decorated_function
+
+def with_transaction(f):
+    """Decorator to handle database transactions
+    
+    Provides a session object as first argument to the decorated function.
+    Handles commit/rollback automatically.
+    """
+    @wraps(f)
+    def decorated_function(*args: Any, **kwargs: Any) -> Any:
+        with session_scope() as session:
+            try:
+                result = f(session, *args, **kwargs)
+                return result
+            except Exception as e:
+                logger.error(f"Transaction error: {str(e)}", exc_info=True)
+                raise
+    return decorated_function
+
+@app.teardown_appcontext
+def remove_session(exception=None):
+    """Remove the session at the end of the request"""
+    session = get_session()
+    session.remove()
 
 def admin_required(f):
     @wraps(f)
