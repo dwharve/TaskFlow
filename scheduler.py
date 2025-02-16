@@ -16,11 +16,6 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import and_
 
-from models import Task, db, TaskLock
-from blocks.manager import manager
-from pubsub import pubsub, Message
-from database import init_db
-
 # Configure logging before anything else
 log_level = os.environ.get('LOG_LEVEL', 'INFO')
 logging.basicConfig(
@@ -38,6 +33,11 @@ for logger_name in ['werkzeug', 'sqlalchemy', 'apscheduler']:
     logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
+
+from models import Task, db, TaskLock
+from blocks.manager import manager
+from pubsub import pubsub, Message
+from database import init_db
 
 # Topics for pub/sub communication
 TASK_START_TOPIC = "task_start"
