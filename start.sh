@@ -28,10 +28,13 @@ chmod 660 /app/run/*.pid
 
 # Ensure database directory and file have correct permissions
 chown -R appuser:appgroup /app/instance
-chmod 770 /app/instance
+chmod 775 /app/instance
 touch /app/instance/database.db
 chown appuser:appgroup /app/instance/database.db
 chmod 660 /app/instance/database.db
+
+# Remove any stale SQLite journal files
+rm -f /app/instance/database.db-journal
 
 # Switch to appuser for all operations
 exec setpriv --reuid=appuser --regid=appgroup --init-groups bash << 'EOF'

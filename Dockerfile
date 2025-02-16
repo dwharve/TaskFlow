@@ -52,16 +52,13 @@ COPY . .
 RUN mkdir -p /app/instance /app/logs /app/run && \
     groupadd -r appgroup && \
     useradd -r -g appgroup appuser && \
+    # Set base permissions
     chown -R appuser:appgroup /app && \
-    chmod -R 750 /app && \
-    chmod 770 /app/instance /app/logs /app/run && \
-    chmod 770 /app/start.sh && \
-    # Create an empty database file with correct permissions
-    touch /app/instance/database.db && \
-    chown appuser:appgroup /app/instance/database.db && \
-    chmod 660 /app/instance/database.db && \
-    # Initialize SQLite database with correct permissions
-    sqlite3 /app/instance/database.db ".databases"
+    # Make start script executable
+    chmod +x /app/start.sh
+
+# Switch to non-root user - will be overridden by start.sh for specific processes
+USER appuser
 
 # Expose port
 EXPOSE 5000
