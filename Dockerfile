@@ -14,7 +14,9 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
-    python3-dev && \
+    python3-dev \
+    libffi-dev \
+    make && \
     rm -rf /var/lib/apt/lists/*
 
 # Create and activate virtual environment
@@ -43,7 +45,8 @@ ENV PATH="/opt/venv/bin:$PATH"
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     libpq5 \
-    supervisor && \
+    supervisor \
+    libffi7 && \
     rm -rf /var/lib/apt/lists/* && \
     mkdir -p /var/log/supervisor /var/run/supervisor && \
     chmod 777 /var/log/supervisor /var/run/supervisor
