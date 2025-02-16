@@ -167,15 +167,21 @@ class TaskScheduler:
         
         # Initialize scheduler in all processes, but only start it in the scheduler process
         logger.info("Initializing scheduler")
-        self.scheduler = BackgroundScheduler()
+        
+        # Only create scheduler if it doesn't exist
+        if self.scheduler is None:
+            self.scheduler = BackgroundScheduler()
         
         # Only start scheduler in standalone mode or if explicitly set as the scheduler process
         is_scheduler_process = bool(os.environ.get('SCHEDULER_PROCESS', ''))
         is_standalone = bool(os.environ.get('SCHEDULER_STANDALONE', ''))
         
-        if is_standalone or is_scheduler_process:
+        if (is_standalone or is_scheduler_process) and not self.scheduler.running:
             logger.info("Starting scheduler in standalone/scheduler process")
-            self.scheduler.start()
+            try:
+                self.scheduler.start()
+            except Exception as e:
+                logger.warning(f"Failed to start scheduler: {str(e)}")
         else:
             logger.info("Worker process - scheduler initialized but not started")
             
@@ -226,8 +232,11 @@ class TaskScheduler:
             return
             
         try:
-            self.scheduler.start()
-            logger.info("Scheduler started successfully")
+            if not self.scheduler.running:
+                self.scheduler.start()
+                logger.info("Scheduler started successfully")
+            else:
+                logger.info("Scheduler is already running")
             
             # Load and schedule existing tasks
             num_tasks = self._load_existing_tasks()

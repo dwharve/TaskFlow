@@ -86,51 +86,31 @@ def initialize_database(app):
                     # Initialize migrations
                     logger.info("Initializing migrations")
                     flask_migrate.init()
+                    
+                    # Create initial migration
+                    logger.info("Creating initial migration")
+                    flask_migrate.migrate()
+                    
+                    # Apply migrations
+                    logger.info("Applying migrations")
+                    flask_migrate.upgrade()
                 except Exception as e:
                     logger.error(f"Error initializing migrations: {str(e)}")
                     # If migrations fail, fall back to create_all
+                    logger.info("Falling back to create_all")
                     db.create_all()
                     return
-            
-            # Check for schema changes
-            inspector = inspect(db.engine)
-            current_metadata = db.Model.metadata
-            current_metadata.reflect(bind=db.engine)
-            
-            expected_tables = set(current_metadata.tables.keys())
-            existing_tables = set(inspector.get_table_names())
-            
-            needs_migration = False
-            
-            # Check for missing tables
-            if missing_tables := expected_tables - existing_tables:
-                logger.info(f"Missing tables detected: {missing_tables}")
-                needs_migration = True
-            
-            # Check for schema changes in existing tables
-            for table in existing_tables & expected_tables:
-                expected_columns = {c.name for c in current_metadata.tables[table].columns}
-                existing_columns = {c['name'] for c in inspector.get_columns(table)}
-                
-                if expected_columns != existing_columns:
-                    logger.info(f"Schema mismatch in table {table}")
-                    logger.debug(f"Expected columns: {expected_columns}")
-                    logger.debug(f"Existing columns: {existing_columns}")
-                    needs_migration = True
-                    break
-            
-            if needs_migration:
-                logger.info("Generating and applying database migrations")
-                try:
-                    flask_migrate.migrate()
-                    flask_migrate.upgrade()
-                    logger.info("Database migrations applied successfully")
-                except Exception as e:
-                    logger.error(f"Error applying migrations: {str(e)}", exc_info=True)
-                    # If migrations fail, fall back to create_all
-                    db.create_all()
             else:
-                logger.info("No schema changes detected")
+                logger.info("Migrations already initialized")
+                try:
+                    # Apply any pending migrations
+                    logger.info("Checking for pending migrations")
+                    flask_migrate.upgrade()
+                except Exception as e:
+                    logger.error(f"Error applying migrations: {str(e)}")
+                    # If migrations fail, ensure tables exist
+                    db.create_all()
+                    return
     
     except Exception as e:
         logger.error(f"Error initializing database: {str(e)}", exc_info=True)
