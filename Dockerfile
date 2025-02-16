@@ -49,7 +49,10 @@ RUN groupadd -r appgroup && \
     mkdir -p /app/instance /app/logs && \
     chown -R appuser:appgroup /app && \
     chmod 770 /app/instance /app/logs && \
-    chmod +x /app/start.sh
+    chown appuser:appgroup /app/instance/database.db 2>/dev/null || true && \
+    chmod 660 /app/instance/database.db 2>/dev/null || true && \
+    chmod 750 /app/*.py && \
+    chmod 770 /app/start.sh
 
 # Switch to non-root user - will be overridden by start.sh for specific processes
 USER appuser
