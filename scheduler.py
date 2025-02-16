@@ -10,15 +10,32 @@ import time
 import atexit
 import os
 import sys
+from flask import Flask, current_app
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import and_
-from flask import Flask, current_app
 
 from models import Task, db, TaskLock
 from blocks.manager import manager
 from pubsub import pubsub, Message
+from database import init_db
+
+# Configure logging before anything else
+log_level = os.environ.get('LOG_LEVEL', 'INFO')
+logging.basicConfig(
+    level=log_level,
+    format='%(asctime)s - %(process)d - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ],
+    force=True
+)
+
+# Set third-party loggers to warning level to reduce noise
+for logger_name in ['werkzeug', 'sqlalchemy', 'apscheduler']:
+    logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
@@ -147,12 +164,12 @@ class TaskScheduler:
         """
         self.app = app
         
-        # Detect if this is a worker process by checking if we're in a Gunicorn worker
-        # The main Gunicorn process will have SERVER_SOFTWARE but not GUNICORN_FD
+        # Always initialize scheduler in standalone mode or if not in a Gunicorn worker
         is_worker = bool(os.environ.get('GUNICORN_FD', ''))
+        is_standalone = bool(os.environ.get('SCHEDULER_STANDALONE', ''))
         
-        if not is_worker:
-            logger.info("Initializing scheduler in main process")
+        if is_standalone or not is_worker:
+            logger.info("Initializing scheduler in standalone/main process")
             self.scheduler = BackgroundScheduler()
         else:
             logger.info("Gunicorn worker process detected - skipping scheduler initialization")
@@ -199,7 +216,7 @@ class TaskScheduler:
             logger.error("Cannot start scheduler: Flask app not initialized")
             raise RuntimeError("Flask app not initialized")
         
-        # Only start scheduler in main process
+        # Only start scheduler in standalone mode or main process
         if self.scheduler is None:
             logger.info("Worker process - skipping scheduler start")
             return
@@ -433,5 +450,49 @@ class TaskScheduler:
             logger.error(f"Traceback: {traceback.format_exc()}")
             raise
 
+def create_app():
+    """Create a minimal Flask app for database context"""
+    app = Flask(__name__)
+    
+    # Set environment variables
+    app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///database.db')
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    
+    # Initialize database
+    db.init_app(app)
+    init_db(app)
+    
+    return app
+
 # Global instance
-scheduler = TaskScheduler() 
+scheduler = TaskScheduler()
+
+def main():
+    """Run the scheduler as a standalone process"""
+    logger.info("Starting scheduler in standalone mode")
+    os.environ['SCHEDULER_STANDALONE'] = '1'
+    
+    # Create minimal Flask app
+    app = create_app()
+    
+    # Initialize scheduler
+    scheduler.init_app(app)
+    
+    try:
+        # Start the scheduler
+        scheduler.start()
+        
+        # Keep the process running
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("Received shutdown signal")
+    except Exception as e:
+        logger.error(f"Error in scheduler process: {str(e)}", exc_info=True)
+        sys.exit(1)
+    finally:
+        scheduler.stop()
+        logger.info("Scheduler process stopped")
+
+if __name__ == '__main__':
+    main() 
