@@ -6,78 +6,38 @@ import threading
 import traceback
 import json
 import queue
-import time
-import atexit
-import os
-import sys
-from flask import Flask, current_app
-from sqlalchemy import text
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import and_
+from flask import Flask
 
-# Configure logging before anything else
-log_level = os.environ.get('LOG_LEVEL', 'INFO')
-logging.basicConfig(
-    level=log_level,
-    format='%(asctime)s - %(process)d - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ],
-    force=True
-)
-
-# Set third-party loggers to warning level to reduce noise
-for logger_name in ['werkzeug', 'sqlalchemy', 'apscheduler']:
-    logging.getLogger(logger_name).setLevel(logging.WARNING)
+from models import Task, db
+from blocks.manager import manager
+from pubsub import pubsub, Message
 
 logger = logging.getLogger(__name__)
 
-from models import Task, db, TaskLock
-from blocks.manager import manager
-from pubsub import pubsub, Message
-from database import init_db
-
 # Topics for pub/sub communication
 TASK_START_TOPIC = "task_start"
-TASK_START_ACK_TOPIC = "task_start_ack"
 TASK_COMPLETE_TOPIC = "task_complete"
 TASK_FAILED_TOPIC = "task_failed"
 
 class TaskScheduler:
     """Scheduler for running tasks on a schedule"""
     
-    _instance = None
-    _lock = threading.Lock()
-    
-    def __new__(cls):
-        with cls._lock:
-            if cls._instance is None:
-                cls._instance = super(TaskScheduler, cls).__new__(cls)
-            return cls._instance
-    
     def __init__(self):
-        if not hasattr(self, '_initialized'):
-            logger.info("Initializing TaskScheduler")
-            self._running_tasks = {}
-            self.scheduler = None
-            self.app = None
-            self._cleanup_lock = threading.Lock()
-            self._task_queues: Dict[str, queue.Queue] = {}
-            self._worker_id = f"worker_{int(time.time() * 1000)}"  # Unique ID for this worker
-            self._setup_pubsub()
-            self._initialized = True
-            
-            # Register cleanup on exit
-            atexit.register(self.stop)
+        logger.info("Initializing TaskScheduler")
+        self._running_tasks = {}
+        self.scheduler = BackgroundScheduler()
+        self.app = None
+        self._cleanup_lock = threading.Lock()
+        self._task_queues: Dict[str, queue.Queue] = {}
+        self._setup_pubsub()
     
     def _setup_pubsub(self):
         """Setup pub/sub subscriptions"""
-        # Subscribe to all task-related events
-        self._task_queues[TASK_START_TOPIC] = pubsub.subscribe(TASK_START_TOPIC)
-        self._task_queues[TASK_START_ACK_TOPIC] = pubsub.subscribe(TASK_START_ACK_TOPIC)
+        # Subscribe to task completion events
         self._task_queues[TASK_COMPLETE_TOPIC] = pubsub.subscribe(TASK_COMPLETE_TOPIC)
         self._task_queues[TASK_FAILED_TOPIC] = pubsub.subscribe(TASK_FAILED_TOPIC)
         
@@ -89,53 +49,21 @@ class TaskScheduler:
         """Listen for task events from other workers"""
         while True:
             try:
-                # Check start requests
-                try:
-                    message = self._task_queues[TASK_START_TOPIC].get_nowait()
-                    task_id = message.data
-                    # If we're running this task, acknowledge it
-                    if task_id in self._running_tasks:
-                        logger.info(f"Task {task_id} is already running on this worker, sending ACK")
-                        pubsub.publish(TASK_START_ACK_TOPIC, {
-                            'task_id': task_id,
-                            'worker_id': self._worker_id
-                        })
-                except queue.Empty:
-                    pass
-                
-                # Check start acknowledgments
-                try:
-                    message = self._task_queues[TASK_START_ACK_TOPIC].get_nowait()
-                    data = message.data
-                    task_id = data['task_id']
-                    worker_id = data['worker_id']
-                    if worker_id != self._worker_id:
-                        logger.info(f"Task {task_id} is already running on worker {worker_id}")
-                        self._cleanup_task(task_id)
-                except queue.Empty:
-                    pass
-                
                 # Check complete queue
                 try:
                     message = self._task_queues[TASK_COMPLETE_TOPIC].get_nowait()
-                    data = message.data
-                    task_id = data['task_id']
-                    worker_id = data['worker_id']
-                    logger.info(f"Received task completion notification for task {task_id} from worker {worker_id}")
-                    if worker_id == self._worker_id:
-                        self._cleanup_task(task_id)
+                    task_id = message.data
+                    logger.info(f"Received task completion notification for task {task_id}")
+                    self._cleanup_task(task_id)
                 except queue.Empty:
                     pass
                 
                 # Check failed queue
                 try:
                     message = self._task_queues[TASK_FAILED_TOPIC].get_nowait()
-                    data = message.data
-                    task_id = data['task_id']
-                    worker_id = data['worker_id']
-                    logger.info(f"Received task failure notification for task {task_id} from worker {worker_id}")
-                    if worker_id == self._worker_id:
-                        self._cleanup_task(task_id)
+                    task_id = message.data
+                    logger.info(f"Received task failure notification for task {task_id}")
+                    self._cleanup_task(task_id)
                 except queue.Empty:
                     pass
                 
@@ -164,27 +92,6 @@ class TaskScheduler:
             app: Flask application instance
         """
         self.app = app
-        
-        # Initialize scheduler in all processes, but only start it in the scheduler process
-        logger.info("Initializing scheduler")
-        
-        # Only create scheduler if it doesn't exist
-        if self.scheduler is None:
-            self.scheduler = BackgroundScheduler()
-        
-        # Only start scheduler in standalone mode or if explicitly set as the scheduler process
-        is_scheduler_process = bool(os.environ.get('SCHEDULER_PROCESS', ''))
-        is_standalone = bool(os.environ.get('SCHEDULER_STANDALONE', ''))
-        
-        if (is_standalone or is_scheduler_process) and not self.scheduler.running:
-            logger.info("Starting scheduler in standalone/scheduler process")
-            try:
-                self.scheduler.start()
-            except Exception as e:
-                logger.warning(f"Failed to start scheduler: {str(e)}")
-        else:
-            logger.info("Worker process - scheduler initialized but not started")
-            
         logger.info("Initialized scheduler with Flask app")
     
     def _load_existing_tasks(self):
@@ -225,18 +132,11 @@ class TaskScheduler:
         if not self.app:
             logger.error("Cannot start scheduler: Flask app not initialized")
             raise RuntimeError("Flask app not initialized")
-        
-        # Only start scheduler in standalone mode or main process
-        if self.scheduler is None:
-            logger.info("Worker process - skipping scheduler start")
-            return
             
         try:
-            if not self.scheduler.running:
-                self.scheduler.start()
-                logger.info("Scheduler started successfully")
-            else:
-                logger.info("Scheduler is already running")
+            # First start the scheduler
+            self.scheduler.start()
+            logger.info("Scheduler started successfully")
             
             # Load and schedule existing tasks
             num_tasks = self._load_existing_tasks()
@@ -258,9 +158,8 @@ class TaskScheduler:
         """Stop the scheduler"""
         logger.info("Stopping scheduler")
         try:
-            if self.scheduler is not None:
-                self.scheduler.shutdown()
-                logger.info("Scheduler shutdown complete")
+            self.scheduler.shutdown()
+            logger.info("Scheduler shutdown complete")
             
             # Stop any running tasks
             running_tasks = list(self._running_tasks.items())
@@ -270,8 +169,7 @@ class TaskScheduler:
                 self.cleanup_task_resources(task_id)
         except Exception as e:
             logger.error(f"Error during scheduler shutdown: {str(e)}")
-            # Don't raise the error since this is called during shutdown
-            pass
+            raise
     
     def schedule_task(self, task: Task):
         """Schedule a task to run
@@ -285,11 +183,6 @@ class TaskScheduler:
             return
         
         try:
-            # Only attempt to schedule if we have a scheduler
-            if not self.scheduler:
-                logger.warning(f"Cannot schedule task {task.id}: scheduler not initialized")
-                return
-            
             # Remove any existing job
             try:
                 self.scheduler.remove_job(str(task.id))
@@ -347,44 +240,60 @@ class TaskScheduler:
             logger.error(f"Cannot run task {task_id}: Flask app not initialized")
             return
             
-        # Only allow task execution in the scheduler process
-        if not self.scheduler:
-            logger.info(f"Not a scheduler process - skipping task execution for task {task_id}")
-            return
-            
         logger.info(f"Initiating task run for task {task_id}")
         
-        # Check if task is already running locally
-        with self._cleanup_lock:
-            if task_id in self._running_tasks:
-                logger.info(f"Task {task_id} is already running locally")
-                return
+        # Check if task is already running by publishing a start request
+        # Other workers will respond if they're already running it
+        pubsub.publish(TASK_START_TOPIC, task_id)
         
-        # Try to acquire task lock
-        if not TaskLock.acquire_lock(task_id, self._worker_id):
-            logger.info(f"Could not acquire lock for task {task_id}, another worker is likely running it")
+        # Brief wait to allow other workers to respond
+        threading.Event().wait(0.1)
+        
+        # Check if task is already running
+        if task_id in self._running_tasks:
+            logger.warning(f"Task {task_id} is already running, skipping this execution")
+            thread = self._running_tasks[task_id]
+            logger.debug(f"Running thread info - Alive: {thread.is_alive()}, Name: {thread.name}")
             return
-            
+        
+        # Get task
         try:
-            with self._cleanup_lock:
-                if task_id not in self._running_tasks:
-                    logger.info(f"Starting task {task_id}")
-                    thread = threading.Thread(
-                        target=self._run_task_thread,
-                        args=(task_id,),
-                        name=f"Task-{task_id}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-                    )
-                    thread.daemon = True
-                    self._running_tasks[task_id] = thread
-                    thread.start()
-                    logger.info(f"Started thread {thread.name} for task {task_id}")
-                else:
-                    logger.info(f"Task {task_id} is already running locally")
+            with self.app.app_context():
+                task = Task.query.get(task_id)
+                if not task:
+                    logger.error(f"Task {task_id} not found in database")
+                    return
+                
+                logger.info(f"Starting execution of task {task_id} - {task.name}")
+                
+                # Update task status
+                task.status = 'running'
+                task.last_run = datetime.utcnow()
+                db.session.commit()
+                logger.info(f"Updated task {task_id} status to 'running'")
+            
+            # Create thread to run the task
+            thread = threading.Thread(
+                target=self._run_task_thread,
+                args=(task_id,),
+                name=f"Task-{task_id}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            )
+            thread.daemon = True
+            self._running_tasks[task_id] = thread
+            thread.start()
+            logger.info(f"Started thread {thread.name} for task {task_id}")
+            
         except Exception as e:
-            logger.error(f"Error starting task {task_id}: {str(e)}")
-            # Make sure to release lock if we fail to start the task
-            TaskLock.release_lock(task_id, self._worker_id)
-            raise
+            logger.error(f"Error initiating task {task_id}: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            try:
+                with self.app.app_context():
+                    task.status = 'failed'
+                    db.session.commit()
+                    logger.info(f"Updated task {task_id} status to 'failed'")
+                pubsub.publish(TASK_FAILED_TOPIC, task_id)
+            except Exception as inner_e:
+                logger.error(f"Failed to update task status: {str(inner_e)}")
     
     def cleanup_task_resources(self, task_id):
         """Clean up all resources associated with a task"""
@@ -392,57 +301,57 @@ class TaskScheduler:
             if task_id in self._running_tasks:
                 thread = self._running_tasks.pop(task_id)
                 try:
-                    # Only try to join if it's not the current thread
-                    if thread.ident != threading.current_thread().ident:
-                        if thread.is_alive():
-                            thread.join(timeout=1)
+                    # Give the thread a chance to finish gracefully
+                    if thread.is_alive():
+                        thread.join(timeout=1)
                 except Exception as e:
                     logger.error(f"Error while joining task thread {task_id}: {str(e)}")
                 finally:
-                    # Always remove from running tasks and release lock
-                    TaskLock.release_lock(task_id, self._worker_id)
+                    # Always remove from running tasks, even if join failed
+                    del self._running_tasks[task_id]
                     logger.info(f"Cleaned up resources for task {task_id}")
     
     def _run_task_thread(self, task_id: int):
-        """Run a task in a separate thread
+        """Execute task in a thread
         
         Args:
             task_id: ID of the task to run
         """
+        thread_name = threading.current_thread().name
+        logger.info(f"Thread {thread_name} starting execution of task {task_id}")
+        
         try:
             with self.app.app_context():
-                task = db.session.get(Task, task_id)
+                task = Task.query.get(task_id)
                 if not task:
-                    logger.error(f"Task {task_id} not found")
+                    logger.error(f"Task {task_id} not found when starting thread execution")
                     return
                 
-                logger.info(f"Starting execution of task {task_id} - {task.name}")
-                task.update_status('running')
-                
-                # Execute the task
+                # Execute task
                 asyncio.run(self._execute_task(task))
                 
-                # Update task status
-                task.update_status('completed')
+                # Update status and notify other workers
+                task.status = 'completed'
+                task.last_run = datetime.utcnow()
+                db.session.commit()
+                pubsub.publish(TASK_COMPLETE_TOPIC, task_id)
+                logger.info(f"Task {task_id} completed successfully")
                 
         except Exception as e:
-            logger.error(f"Error executing task {task_id}: {str(e)}")
-            logger.error(traceback.format_exc())
-            with self.app.app_context():
-                task = Task.query.get(task_id)
-                if task:
-                    task.update_status('failed')
+            logger.error(f"Error in task thread {task_id}: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            try:
+                with self.app.app_context():
+                    task = Task.query.get(task_id)
+                    if task:
+                        task.update_status('failed')
+                pubsub.publish(TASK_FAILED_TOPIC, task_id)
+            except Exception as inner_e:
+                logger.error(f"Failed to update task status: {str(inner_e)}")
             
         finally:
-            # Always release lock when task is done
-            TaskLock.release_lock(task_id, self._worker_id)
-            # Use a separate thread for cleanup to avoid self-join
-            cleanup_thread = threading.Thread(
-                target=self.cleanup_task_resources,
-                args=(task_id,),
-                daemon=True
-            )
-            cleanup_thread.start()
+            # Always clean up resources
+            self.cleanup_task_resources(task_id)
     
     async def _execute_task(self, task: Task):
         """Execute a task
@@ -473,66 +382,5 @@ class TaskScheduler:
             logger.error(f"Traceback: {traceback.format_exc()}")
             raise
 
-def create_app():
-    """Create a minimal Flask app for database context"""
-    app = Flask(__name__)
-    
-    # Set environment variables
-    app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', f'sqlite:///{os.path.join(os.path.abspath(os.path.dirname(__file__)), "instance", "database.db")}')
-    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-    
-    # Initialize database connection only
-    db.init_app(app)
-    
-    # Wait for database to be ready
-    with app.app_context():
-        max_retries = 30
-        retry_interval = 1
-        for attempt in range(max_retries):
-            try:
-                # Try to query the database using proper SQLAlchemy text()
-                db.session.execute(text('SELECT 1'))
-                logger.info("Database is ready")
-                break
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    logger.info(f"Database not ready, retrying in {retry_interval} seconds... (Attempt {attempt + 1}/{max_retries})")
-                    time.sleep(retry_interval)
-                else:
-                    logger.error("Failed to connect to database after maximum retries")
-                    raise
-    
-    return app
-
 # Global instance
-scheduler = TaskScheduler()
-
-def main():
-    """Run the scheduler as a standalone process"""
-    logger.info("Starting scheduler in standalone mode")
-    os.environ['SCHEDULER_STANDALONE'] = '1'
-    
-    # Create minimal Flask app
-    app = create_app()
-    
-    # Initialize scheduler
-    scheduler.init_app(app)
-    
-    try:
-        # Start the scheduler
-        scheduler.start()
-        
-        # Keep the process running
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        logger.info("Received shutdown signal")
-    except Exception as e:
-        logger.error(f"Error in scheduler process: {str(e)}", exc_info=True)
-        sys.exit(1)
-    finally:
-        scheduler.stop()
-        logger.info("Scheduler process stopped")
-
-if __name__ == '__main__':
-    main() 
+scheduler = TaskScheduler() 

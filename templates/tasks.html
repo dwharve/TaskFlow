@@ -30,8 +30,8 @@
                     <td>{{ task.name }}</td>
                     <td>
                         <div class="block-chain-preview">
-                            {% set chain_data = task.get_block_chain() %}
-                            {% for block in chain_data.blocks %}
+                            {% set blocks = task.get_block_chain() %}
+                            {% for block in blocks %}
                                 {% if not loop.first %}
                                     <span class="chain-arrow">→</span>
                                 {% endif %}
