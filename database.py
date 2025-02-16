@@ -7,6 +7,7 @@ from sqlalchemy import event
 # Thread local storage for database sessions
 thread_local = threading.local()
 
+# Create session factory but don't configure it yet
 Session = scoped_session(sessionmaker())
 
 def init_db(app):
@@ -16,6 +17,9 @@ def init_db(app):
         app: Flask application instance
     """
     with app.app_context():
+        # Configure session to use Flask-SQLAlchemy's engine
+        Session.configure(bind=db.engine)
+        
         # Create all tables
         db.create_all()
         

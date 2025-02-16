@@ -191,14 +191,17 @@ app.config['WTF_CSRF_ENABLED'] = True
 db.init_app(app)
 migrate = Migrate(app, db)
 
-# Initialize database
+# Initialize database and configure session
 initialize_database(app)
+from database import init_db
+init_db(app)
 
-# Initialize secret key
-secret_key = Settings.get_setting('SECRET_KEY')
-if not secret_key:
-    secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
-    Settings.set_setting('SECRET_KEY', secret_key)
+# Initialize secret key using session_scope
+with session_scope() as session:
+    secret_key = Settings.get_setting('SECRET_KEY', session=session)
+    if not secret_key:
+        secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
+        Settings.set_setting('SECRET_KEY', secret_key, session=session)
 app.config['SECRET_KEY'] = secret_key
 
 # Initialize and start scheduler

@@ -323,31 +323,72 @@ class Settings(db.Model):
     version = db.Column(db.Integer, default=1)  # For optimistic locking
 
     @staticmethod
-    def get_setting(key, default=None):
-        from database import session_scope
-        with session_scope() as session:
+    def get_setting(key, default=None, session=None):
+        """Get a setting value
+        
+        Args:
+            key: Setting key
+            default: Default value if setting doesn't exist
+            session: Optional database session to use
+            
+        Returns:
+            Setting value or default
+        """
+        if session is None:
+            from database import session_scope
+            with session_scope() as session:
+                setting = session.query(Settings).get(key)
+                return setting.value if setting else default
+        else:
             setting = session.query(Settings).get(key)
             return setting.value if setting else default
 
     @staticmethod
-    def set_setting(key, value):
-        from database import session_scope
-        with session_scope() as session:
-            setting = session.query(Settings).get(key)
-            if setting:
-                current_version = setting.version
-                setting.value = value
-                setting.version += 1
-                session.flush()
-                
-                # Verify no other transaction has modified this record
-                if setting.version != current_version + 1:
-                    session.rollback()
-                    raise Exception("Setting was modified by another transaction")
-            else:
-                setting = Settings(key=key, value=value)
-                session.add(setting)
-            return setting
+    def set_setting(key, value, session=None):
+        """Set a setting value
+        
+        Args:
+            key: Setting key
+            value: Setting value
+            session: Optional database session to use
+            
+        Returns:
+            Settings object
+        """
+        if session is None:
+            from database import session_scope
+            with session_scope() as session:
+                return Settings._set_setting_with_session(key, value, session)
+        else:
+            return Settings._set_setting_with_session(key, value, session)
+    
+    @staticmethod
+    def _set_setting_with_session(key, value, session):
+        """Internal method to set setting with a session
+        
+        Args:
+            key: Setting key
+            value: Setting value
+            session: Database session
+            
+        Returns:
+            Settings object
+        """
+        setting = session.query(Settings).get(key)
+        if setting:
+            current_version = setting.version
+            setting.value = value
+            setting.version += 1
+            session.flush()
+            
+            # Verify no other transaction has modified this record
+            if setting.version != current_version + 1:
+                session.rollback()
+                raise Exception("Setting was modified by another transaction")
+        else:
+            setting = Settings(key=key, value=value)
+            session.add(setting)
+        return setting
 
 # Removed plugin registration code
 
