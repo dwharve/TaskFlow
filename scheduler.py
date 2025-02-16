@@ -9,6 +9,7 @@ import queue
 import time
 import atexit
 import os
+import sys
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -146,12 +147,23 @@ class TaskScheduler:
         """
         self.app = app
         
-        # Only initialize scheduler in the main process
-        if os.environ.get('GUNICORN_WORKER_ID', '0') == '0':
+        # Detect if this is a worker process
+        # In Gunicorn, worker processes will have 'gunicorn' in their parent process name
+        is_worker = False
+        try:
+            import psutil
+            current_process = psutil.Process()
+            parent_process = current_process.parent()
+            is_worker = parent_process and 'gunicorn' in parent_process.name().lower()
+        except:
+            # If psutil fails, fallback to checking if this is the main thread
+            is_worker = threading.current_thread() is not threading.main_thread()
+        
+        if not is_worker:
             logger.info("Initializing scheduler in main process")
             self.scheduler = BackgroundScheduler()
         else:
-            logger.info("Worker process - skipping scheduler initialization")
+            logger.info("Worker process detected - skipping scheduler initialization")
             self.scheduler = None
             
         logger.info("Initialized scheduler with Flask app")

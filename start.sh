@@ -5,10 +5,13 @@ export FLASK_APP=app.py
 export FLASK_ENV=production
 export PYTHONPATH=$PYTHONPATH:$(pwd)
 
+# Install required packages
+pip install psutil
+
 # Initialize the database (this will recreate tables if needed)
 python -c "from app import app; from database import init_db; init_db(app)"
 
-# Start gunicorn with thread-safe configuration
+# Start gunicorn with proper process naming and thread-safe configuration
 gunicorn \
     --bind 0.0.0.0:5000 \
     --workers 4 \
@@ -20,4 +23,6 @@ gunicorn \
     --max-requests 1000 \
     --max-requests-jitter 100 \
     --log-level info \
+    --name taskflow \
+    --preload \
     app:app
