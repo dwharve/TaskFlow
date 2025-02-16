@@ -121,16 +121,6 @@ app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///instance/database.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# Initialize database
-db.init_app(app)
-
-# Initialize scheduler - but don't start it in Gunicorn workers
-scheduler.init_app(app)
-
-# Only start scheduler if this is the scheduler process
-if os.environ.get('SCHEDULER_PROCESS'):
-    scheduler.start()
-
 @app.teardown_appcontext
 def remove_session(exception=None):
     """Remove the session at the end of the request"""
@@ -140,6 +130,9 @@ def remove_session(exception=None):
 def initialize_database(app):
     """Initialize database, create tables, and handle migrations"""
     try:
+        # Initialize Flask-SQLAlchemy
+        db.init_app(app)
+        
         # Create database directory if it doesn't exist
         os.makedirs('instance', exist_ok=True)
         
@@ -197,12 +190,19 @@ def initialize_database(app):
         logger.error(f"Error initializing database: {str(e)}", exc_info=True)
         raise
 
+# Initialize database with migrations
+initialize_database(app)
+
+# Initialize scheduler - but don't start it in Gunicorn workers
+scheduler.init_app(app)
+
 # Initialize secret key using session_scope
 with session_scope() as session:
     secret_key = Settings.get_setting('SECRET_KEY', session=session)
     if not secret_key:
         secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
         Settings.set_setting('SECRET_KEY', secret_key, session=session)
+
 app.config['SECRET_KEY'] = secret_key
 
 from blocks.manager import manager

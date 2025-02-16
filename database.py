@@ -47,5 +47,16 @@ def session_scope():
 
 def init_db():
     """Initialize the database"""
-    from models import Base
-    Base.metadata.create_all(bind=engine) 
+    from models import Base, Settings
+    
+    # Create all tables
+    Base.metadata.create_all(bind=engine)
+    
+    # Initialize with session scope to ensure proper transaction handling
+    with session_scope() as session:
+        # Create default settings if they don't exist
+        if not session.query(Settings).filter_by(key='SECRET_KEY').first():
+            import secrets
+            setting = Settings(key='SECRET_KEY', value=secrets.token_hex(32))
+            session.add(setting)
+            session.commit() 

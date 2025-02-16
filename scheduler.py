@@ -460,12 +460,11 @@ def create_app():
     app = Flask(__name__)
     
     # Set environment variables
-    app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///database.db')
+    app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///instance/database.db')
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     
-    # Initialize database
+    # Initialize database connection only
     db.init_app(app)
-    init_db(app)
     
     return app
 

@@ -6,13 +6,13 @@ export FLASK_ENV=production
 export PYTHONPATH=$PYTHONPATH:$(pwd)
 
 # Create necessary directories
-mkdir -p /var/log /etc/supervisor/conf.d
+mkdir -p /var/log /etc/supervisor/conf.d instance
 
 # Copy supervisord config to the correct location
 cp supervisord.conf /etc/supervisor/conf.d/
 
-# Initialize the database if it doesn't exist
-python -c "from database import init_db; init_db()"
+# Initialize the database with migrations
+python -c "from app import app, initialize_database; initialize_database(app)"
 
 # Start supervisord
 exec /usr/bin/supervisord -n -c /etc/supervisor/conf.d/supervisord.conf
