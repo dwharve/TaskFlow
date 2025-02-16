@@ -8,30 +8,42 @@ from sqlalchemy.orm import scoped_session
 from contextlib import contextmanager
 import logging
 import time
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, Text, JSON
+from sqlalchemy.orm import relationship
+import bcrypt
 
-# Initialize SQLAlchemy with thread-safe session
+# Create base model class
+Base = declarative_base()
+
+# Initialize Flask-SQLAlchemy
 db = SQLAlchemy()
 
 # Configure logger
 logger = logging.getLogger(__name__)
 
 # Models
-class User(UserMixin, db.Model):
+class User(Base, db.Model):
     __tablename__ = 'users'
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(80), unique=True, nullable=False)
-    password_hash = db.Column(db.String(128))
-    is_admin = db.Column(db.Boolean, default=False)
-    is_active = db.Column(db.Boolean, default=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    last_login = db.Column(db.DateTime)
-    tasks = db.relationship('Task', backref='user', lazy=True)
-
+    id = Column(Integer, primary_key=True)
+    username = Column(String(80), unique=True, nullable=False)
+    password_hash = Column(String(128), nullable=False)
+    is_admin = Column(Boolean, default=False)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_login = Column(DateTime)
+    
+    # Relationships
+    tasks = relationship('Task', backref='user', lazy=True)
+    
     def set_password(self, password):
-        self.password_hash = generate_password_hash(password)
-
+        """Hash and set the password"""
+        salt = bcrypt.gensalt()
+        self.password_hash = bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
+    
     def check_password(self, password):
-        return check_password_hash(self.password_hash, password)
+        """Check if the password matches"""
+        return bcrypt.checkpw(password.encode('utf-8'), self.password_hash.encode('utf-8'))
     
     def update_last_login(self):
         from database import session_scope
@@ -39,7 +51,19 @@ class User(UserMixin, db.Model):
             self.last_login = datetime.utcnow()
             session.merge(self)
     
+    @property
+    def is_authenticated(self):
+        return True
+    
+    @property
+    def is_anonymous(self):
+        return False
+    
+    def get_id(self):
+        return str(self.id)
+    
     def to_dict(self):
+        """Convert user to dictionary for API responses"""
         return {
             'id': self.id,
             'username': self.username,
@@ -51,9 +75,8 @@ class User(UserMixin, db.Model):
     
     @staticmethod
     def get_all_users():
-        from database import session_scope
-        with session_scope() as session:
-            return session.query(User).all()
+        """Get all users"""
+        return User.query.all()
     
     @staticmethod
     def get_active_users():
@@ -62,31 +85,29 @@ class User(UserMixin, db.Model):
             return session.query(User).filter_by(is_active=True).all()
     
     def deactivate(self):
-        from database import session_scope
-        with session_scope() as session:
-            user = session.merge(self)
-            user.is_active = False
+        """Deactivate the user"""
+        self.is_active = False
+        db.session.commit()
     
     def activate(self):
-        from database import session_scope
-        with session_scope() as session:
-            user = session.merge(self)
-            user.is_active = True
+        """Activate the user"""
+        self.is_active = True
+        db.session.commit()
 
-class Task(db.Model):
+class Task(Base, db.Model):
     __tablename__ = 'tasks'
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), nullable=False)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    schedule = db.Column(db.String(100))
-    status = db.Column(db.String(20), default='pending')
-    last_run = db.Column(db.DateTime)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    version = db.Column(db.Integer, default=1)  # For optimistic locking
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100), nullable=False)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    schedule = Column(String(100))
+    status = Column(String(20), default='pending')
+    last_run = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    version = Column(Integer, default=1)  # For optimistic locking
     
     # Relationships
-    blocks = db.relationship('Block', backref='task', lazy=True, cascade='all, delete-orphan')
-    item_states = db.relationship('ItemState', backref='task', lazy=True, cascade='all, delete-orphan')
+    blocks = relationship('Block', backref='task', lazy=True, cascade='all, delete-orphan')
+    item_states = relationship('ItemState', backref='task', lazy=True, cascade='all, delete-orphan')
     
     def update_status(self, new_status, max_retries=3):
         """Thread-safe status update with optimistic locking and retries"""
@@ -96,256 +117,141 @@ class Task(db.Model):
         for attempt in range(max_retries):
             try:
                 with session_scope() as session:
-                    task = session.merge(self)
-                    current_version = task.version
+                    # Get fresh instance
+                    task = session.query(Task).get(self.id)
+                    if not task:
+                        raise ValueError(f"Task {self.id} not found")
+                    
+                    # Update status and version
                     task.status = new_status
                     task.version += 1
-                    session.flush()
                     
-                    # Verify no other transaction has modified this record
-                    if task.version != current_version + 1:
-                        session.rollback()
-                        raise Exception("Task was modified by another transaction")
+                    if new_status in ['completed', 'failed']:
+                        task.last_run = datetime.utcnow()
                     
-                    # If we got here, the update was successful
-                    logger.info(f"Successfully updated task {task.id} status to {new_status} (attempt {attempt + 1})")
                     return True
-                    
             except Exception as e:
                 last_error = e
-                logger.warning(f"Failed to update task {self.id} status on attempt {attempt + 1}: {str(e)}")
-                if attempt < max_retries - 1:
-                    time.sleep(0.1 * (attempt + 1))  # Exponential backoff
                 continue
         
-        # If we got here, all retries failed
-        logger.error(f"Failed to update task {self.id} status after {max_retries} attempts")
-        raise last_error
+        # If we get here, we've exhausted our retries
+        raise last_error if last_error else Exception("Failed to update task status")
+    
+    def get_block_chain(self):
+        """Get the execution chain of blocks"""
+        blocks_by_id = {block.id: block for block in self.blocks}
+        connections = []
+        
+        for block in self.blocks:
+            for conn in block.inputs:
+                connections.append({
+                    'from': blocks_by_id[conn.source_block_id].name,
+                    'to': blocks_by_id[conn.target_block_id].name,
+                    'input': conn.input_name
+                })
+        
+        return {
+            'blocks': [{'id': b.id, 'name': b.name, 'type': b.type} for b in self.blocks],
+            'connections': connections
+        }
     
     def get_block_data(self):
-        """Get data for all blocks"""
-        block_data = {
-            "input": {},
-            "processing": {},
-            "action": {}
+        """Get the latest data for each block"""
+        return {
+            block.name: json.loads(block.last_result) if block.last_result else None
+            for block in self.blocks
         }
-        
-        for block in self.blocks:
-            if block.data:
-                try:
-                    data = json.loads(block.data)
-                    block_data[block.type][block.name] = data
-                except (json.JSONDecodeError, TypeError):
-                    continue
-        
-        return block_data
     
-    def set_block_data(self, results):
-        """Store block execution results
+    def set_block_data(self, data):
+        """Set block data from execution results
         
         Args:
-            results: Dictionary containing results for each block type
+            data: Dictionary mapping block names to their results
         """
-        for block_type, type_results in results.items():
-            for block_name, block_data in type_results.items():
-                # Find the block
-                block = next((b for b in self.blocks 
-                            if b.type == block_type and b.name == block_name), None)
-                if block:
-                    block.set_data(block_data)
+        blocks_by_name = {block.name: block for block in self.blocks}
+        
+        for block_name, result in data.items():
+            if block_name in blocks_by_name:
+                blocks_by_name[block_name].last_result = json.dumps(result)
 
-    def get_block_chain(self):
-        """Get blocks in execution order (input -> processing -> action)
-        
-        Returns:
-            List of blocks in execution order, with each block containing its connections
-        """
-        # Create a map of block_id -> block for easy lookup
-        blocks_by_id = {block.id: block for block in self.blocks}
-        
-        # Create dependency graph
-        dependencies = {}  # block_id -> set of block_ids it depends on
-        for block in self.blocks:
-            dependencies[block.id] = set()
-            for conn in block.inputs:
-                dependencies[block.id].add(conn.source_block_id)
-        
-        # Separate blocks by type
-        input_blocks = []
-        processing_blocks = []
-        action_blocks = []
-        
-        for block in self.blocks:
-            if block.type == 'input':
-                input_blocks.append(block)
-            elif block.type == 'processing':
-                processing_blocks.append(block)
-            elif block.type == 'action':
-                action_blocks.append(block)
-        
-        # Build execution chain
-        execution_chain = []
-        
-        # First add input blocks (they have no dependencies)
-        execution_chain.extend(input_blocks)
-        
-        # Add processing blocks in dependency order
-        while processing_blocks:
-            # Find blocks whose dependencies are all satisfied
-            ready_blocks = [
-                block for block in processing_blocks
-                if all(dep_id in {b.id for b in execution_chain} for dep_id in dependencies[block.id])
-            ]
-            
-            if not ready_blocks and processing_blocks:
-                # We have blocks but none are ready - must be a cycle
-                break
-            
-            # Add ready blocks to chain
-            for block in ready_blocks:
-                execution_chain.append(block)
-                processing_blocks.remove(block)
-        
-        # Finally add action blocks
-        execution_chain.extend(action_blocks)
-        
-        # Add connection information to each block
-        for block in execution_chain:
-            block.input_connections = []
-            block.output_connections = []
-            
-            # Add input connections
-            for conn in block.inputs:
-                if conn.source_block_id in blocks_by_id:
-                    source_block = blocks_by_id[conn.source_block_id]
-                    block.input_connections.append({
-                        'source_block': source_block,
-                        'input_name': conn.input_name
-                    })
-            
-            # Add output connections
-            for conn in block.outputs:
-                if conn.target_block_id in blocks_by_id:
-                    target_block = blocks_by_id[conn.target_block_id]
-                    block.output_connections.append({
-                        'target_block': target_block,
-                        'input_name': conn.input_name
-                    })
-        
-        return execution_chain
-
-class Block(db.Model):
-    """Model representing a block in a task"""
+class Block(Base, db.Model):
     __tablename__ = 'blocks'
-    
-    id = db.Column(db.Integer, primary_key=True)
-    task_id = db.Column(db.Integer, db.ForeignKey('tasks.id', ondelete='CASCADE'), nullable=False)
-    name = db.Column(db.String(100), nullable=False)
-    type = db.Column(db.String(20), nullable=False)  # 'input', 'processing', or 'action'
-    display_name = db.Column(db.String(100))  # Display name for the block
-    parameters = db.Column(db.Text)  # JSON string of parameters
-    data = db.Column(db.Text)  # JSON string of block output data
-    position_x = db.Column(db.Float)  # For UI positioning
-    position_y = db.Column(db.Float)  # For UI positioning
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    id = Column(Integer, primary_key=True)
+    task_id = Column(Integer, ForeignKey('tasks.id'), nullable=False)
+    name = Column(String(100), nullable=False)
+    type = Column(String(20), nullable=False)  # input, processing, or action
+    parameters = Column(JSON)
+    position_x = Column(Integer)
+    position_y = Column(Integer)
+    last_result = Column(Text)
+    display_name = Column(String(100))
     
     # Relationships
-    outputs = db.relationship(
-        'BlockConnection',
-        foreign_keys='BlockConnection.source_block_id',
-        backref='source_block',
-        lazy=True,
-        cascade='all, delete-orphan'
-    )
-    inputs = db.relationship(
-        'BlockConnection',
-        foreign_keys='BlockConnection.target_block_id',
-        backref='target_block',
-        lazy=True,
-        cascade='all, delete-orphan'
-    )
-    
-    def set_parameters(self, parameters):
-        """Set block parameters"""
-        if isinstance(parameters, dict):
-            parameters = json.dumps(parameters)
-        self.parameters = parameters
+    inputs = relationship('BlockConnection', 
+                         foreign_keys='BlockConnection.target_block_id',
+                         backref='target_block',
+                         lazy=True,
+                         cascade='all, delete-orphan')
+    outputs = relationship('BlockConnection',
+                          foreign_keys='BlockConnection.source_block_id',
+                          backref='source_block',
+                          lazy=True,
+                          cascade='all, delete-orphan')
     
     def get_parameters(self):
         """Get block parameters"""
-        return json.loads(self.parameters) if self.parameters else {}
+        return self.parameters or {}
     
-    def set_data(self, data):
-        """Set block output data"""
-        if isinstance(data, (dict, list)):
-            data = json.dumps(data)
-        self.data = data
-    
-    def get_data(self):
-        """Get block output data"""
-        return json.loads(self.data) if self.data else None
+    def set_parameters(self, params):
+        """Set block parameters
+        
+        Args:
+            params: Dictionary of parameter values
+        """
+        self.parameters = params
 
-class BlockConnection(db.Model):
-    """Model representing a connection between blocks"""
+class BlockConnection(Base, db.Model):
     __tablename__ = 'block_connections'
-    
-    id = db.Column(db.Integer, primary_key=True)
-    source_block_id = db.Column(db.Integer, db.ForeignKey('blocks.id', ondelete='CASCADE'), nullable=False)
-    target_block_id = db.Column(db.Integer, db.ForeignKey('blocks.id', ondelete='CASCADE'), nullable=False)
-    input_name = db.Column(db.String(50))  # Name of the input on the target block (for blocks with multiple inputs)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    
-    __table_args__ = (
-        db.UniqueConstraint('source_block_id', 'target_block_id', 'input_name', name='unique_connection'),
-    )
+    id = Column(Integer, primary_key=True)
+    source_block_id = Column(Integer, ForeignKey('blocks.id'), nullable=False)
+    target_block_id = Column(Integer, ForeignKey('blocks.id'), nullable=False)
+    input_name = Column(String(100), nullable=False)
 
-class ItemState(db.Model):
-    """Model for storing seen items for the item monitor plugin"""
+class ItemState(Base, db.Model):
     __tablename__ = 'item_states'
-
-    id = db.Column(db.Integer, primary_key=True)
-    task_id = db.Column(db.Integer, db.ForeignKey('tasks.id', ondelete='CASCADE'), nullable=False)
-    item_hash = db.Column(db.String(64), nullable=False)  # SHA-256 hash is 64 chars
-    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
-
-    # Create indexes
+    id = Column(Integer, primary_key=True)
+    task_id = Column(Integer, ForeignKey('tasks.id'), nullable=False)
+    item_id = Column(String(255), nullable=False)
+    state = Column(String(20), nullable=False)  # new, processed
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
     __table_args__ = (
-        db.Index('idx_task_hash', 'task_id', 'item_hash', unique=True),  # For fast lookups and uniqueness
-        db.Index('idx_task_created', 'task_id', 'created_at'),  # For cleanup
+        db.UniqueConstraint('task_id', 'item_id', name='_task_item_uc'),
     )
 
-    def __repr__(self):
-        return f'<ItemState {self.task_id}:{self.item_hash}>'
-
-class Settings(db.Model):
+class Settings(Base, db.Model):
     __tablename__ = 'settings'
-    key = db.Column(db.String(50), primary_key=True)
-    value = db.Column(db.Text, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    version = db.Column(db.Integer, default=1)  # For optimistic locking
-
+    id = Column(Integer, primary_key=True)
+    key = Column(String(100), unique=True, nullable=False)
+    value = Column(Text)
+    
     @staticmethod
-    def get_setting(key, default=None, session=None):
+    def get_setting(key, session=None):
         """Get a setting value
         
         Args:
             key: Setting key
-            default: Default value if setting doesn't exist
-            session: Optional database session to use
-            
+            session: Optional database session
+        
         Returns:
-            Setting value or default
+            Setting value or None if not found
         """
-        if session is None:
-            from database import session_scope
-            with session_scope() as session:
-                setting = session.query(Settings).get(key)
-                return setting.value if setting else default
+        if session:
+            setting = session.query(Settings).filter_by(key=key).first()
         else:
-            setting = session.query(Settings).get(key)
-            return setting.value if setting else default
-
+            setting = Settings.query.filter_by(key=key).first()
+        return setting.value if setting else None
+    
     @staticmethod
     def set_setting(key, value, session=None):
         """Set a setting value
@@ -353,45 +259,22 @@ class Settings(db.Model):
         Args:
             key: Setting key
             value: Setting value
-            session: Optional database session to use
-            
-        Returns:
-            Settings object
+            session: Optional database session
         """
-        if session is None:
-            from database import session_scope
-            with session_scope() as session:
-                return Settings._set_setting_with_session(key, value, session)
+        if session:
+            setting = session.query(Settings).filter_by(key=key).first()
         else:
-            return Settings._set_setting_with_session(key, value, session)
-    
-    @staticmethod
-    def _set_setting_with_session(key, value, session):
-        """Internal method to set setting with a session
-        
-        Args:
-            key: Setting key
-            value: Setting value
-            session: Database session
+            setting = Settings.query.filter_by(key=key).first()
             
-        Returns:
-            Settings object
-        """
-        setting = session.query(Settings).get(key)
         if setting:
-            current_version = setting.version
             setting.value = value
-            setting.version += 1
-            session.flush()
-            
-            # Verify no other transaction has modified this record
-            if setting.version != current_version + 1:
-                session.rollback()
-                raise Exception("Setting was modified by another transaction")
         else:
             setting = Settings(key=key, value=value)
-            session.add(setting)
-        return setting
+            if session:
+                session.add(setting)
+            else:
+                db.session.add(setting)
+                db.session.commit()
 
 class TaskLock(db.Model):
     """Model for task execution locking"""

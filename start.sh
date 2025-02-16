@@ -5,8 +5,11 @@ export FLASK_APP=app.py
 export FLASK_ENV=production
 export PYTHONPATH=$PYTHONPATH:$(pwd)
 
-# Create log directory if it doesn't exist
-mkdir -p /var/log
+# Create necessary directories
+mkdir -p /var/log /etc/supervisor/conf.d
+
+# Copy supervisord config to the correct location
+cp supervisord.conf /etc/supervisor/conf.d/
 
 # Initialize the database if it doesn't exist
 python -c "from database import init_db; init_db()"
