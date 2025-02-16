@@ -48,6 +48,7 @@ RUN groupadd -r appgroup && \
     useradd -r -g appgroup appuser && \
     mkdir -p /app/instance /app/logs && \
     chown -R appuser:appgroup /app && \
+    chmod 770 /app/instance /app/logs && \
     chmod +x /app/start.sh
 
 # Switch to non-root user - will be overridden by start.sh for specific processes
