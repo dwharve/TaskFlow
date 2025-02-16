@@ -16,6 +16,7 @@ from flask import Flask
 from models import Task, db
 from blocks.manager import manager
 from pubsub import pubsub, Message
+from locks import TaskLock
 
 logger = logging.getLogger(__name__)
 
@@ -285,43 +286,15 @@ class TaskScheduler:
                 logger.info(f"Task {task_id} is already running locally")
                 return
         
-        # Create an event to wait for acknowledgments
-        ack_event = threading.Event()
-        ack_received = False
-        
-        def check_ack():
-            nonlocal ack_received
-            try:
-                while True:
-                    try:
-                        message = self._task_queues[TASK_START_ACK_TOPIC].get_nowait()
-                        data = message.data
-                        if data['task_id'] == task_id and data['worker_id'] != self._worker_id:
-                            logger.info(f"Received ACK for task {task_id} from worker {data['worker_id']}")
-                            ack_received = True
-                            ack_event.set()
-                            return
-                    except queue.Empty:
-                        break
-            except Exception as e:
-                logger.error(f"Error checking ACKs: {str(e)}")
-        
-        # Start a thread to check for acknowledgments
-        ack_thread = threading.Thread(target=check_ack)
-        ack_thread.daemon = True
-        ack_thread.start()
-        
-        # Publish start request
-        pubsub.publish(TASK_START_TOPIC, task_id)
-        
-        # Wait for acknowledgments with timeout
-        ack_event.wait(0.5)  # Wait up to 0.5 seconds for ACKs
-        
-        # If no ACK received, start the task
-        if not ack_received:
+        # Try to acquire task lock
+        if not TaskLock.acquire_lock(task_id, self._worker_id):
+            logger.info(f"Could not acquire lock for task {task_id}, another worker is likely running it")
+            return
+            
+        try:
             with self._cleanup_lock:
                 if task_id not in self._running_tasks:
-                    logger.info(f"No other worker is running task {task_id}, starting it")
+                    logger.info(f"Starting task {task_id}")
                     thread = threading.Thread(
                         target=self._run_task_thread,
                         args=(task_id,),
@@ -333,6 +306,11 @@ class TaskScheduler:
                     logger.info(f"Started thread {thread.name} for task {task_id}")
                 else:
                     logger.info(f"Task {task_id} is already running locally")
+        except Exception as e:
+            logger.error(f"Error starting task {task_id}: {str(e)}")
+            # Make sure to release lock if we fail to start the task
+            TaskLock.release_lock(task_id, self._worker_id)
+            raise
     
     def cleanup_task_resources(self, task_id):
         """Clean up all resources associated with a task"""
@@ -346,8 +324,8 @@ class TaskScheduler:
                 except Exception as e:
                     logger.error(f"Error while joining task thread {task_id}: {str(e)}")
                 finally:
-                    # Always remove from running tasks, even if join failed
-                    del self._running_tasks[task_id]
+                    # Always remove from running tasks and release lock
+                    TaskLock.release_lock(task_id, self._worker_id)
                     logger.info(f"Cleaned up resources for task {task_id}")
     
     def _run_task_thread(self, task_id: int):
@@ -369,24 +347,18 @@ class TaskScheduler:
                 # Execute the task
                 asyncio.run(self._execute_task(task))
                 
-                # Notify completion
-                pubsub.publish(TASK_COMPLETE_TOPIC, {
-                    'task_id': task_id,
-                    'worker_id': self._worker_id
-                })
+                # Update task status
+                task.update_status('completed')
                 
         except Exception as e:
             logger.error(f"Error executing task {task_id}: {str(e)}")
             logger.error(traceback.format_exc())
             task.update_status('failed')
             
-            # Notify failure
-            pubsub.publish(TASK_FAILED_TOPIC, {
-                'task_id': task_id,
-                'worker_id': self._worker_id
-            })
-            
-            raise
+        finally:
+            # Always release lock when task is done
+            TaskLock.release_lock(task_id, self._worker_id)
+            self.cleanup_task_resources(task_id)
     
     async def _execute_task(self, task: Task):
         """Execute a task

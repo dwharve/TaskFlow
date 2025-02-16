@@ -1,6 +1,6 @@
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import UserMixin
-from datetime import datetime
+from datetime import datetime, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
 import json
 from sqlalchemy import event
@@ -392,6 +392,82 @@ class Settings(db.Model):
             setting = Settings(key=key, value=value)
             session.add(setting)
         return setting
+
+class TaskLock(db.Model):
+    """Model for task execution locking"""
+    __tablename__ = 'task_locks'
+    
+    task_id = db.Column(db.Integer, db.ForeignKey('tasks.id', ondelete='CASCADE'), primary_key=True)
+    worker_id = db.Column(db.String(100), nullable=False)
+    locked_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    
+    @staticmethod
+    def acquire_lock(task_id, worker_id, lock_duration=60):
+        """Attempt to acquire a lock for a task
+        
+        Args:
+            task_id: ID of task to lock
+            worker_id: ID of worker attempting to acquire lock
+            lock_duration: Lock duration in seconds
+            
+        Returns:
+            True if lock acquired, False otherwise
+        """
+        from database import session_scope
+        
+        with session_scope() as session:
+            try:
+                # First cleanup expired locks
+                session.query(TaskLock).filter(
+                    TaskLock.expires_at < datetime.utcnow()
+                ).delete()
+                
+                # Try to get existing lock
+                lock = session.query(TaskLock).filter(
+                    TaskLock.task_id == task_id
+                ).first()
+                
+                if lock:
+                    # Lock exists and hasn't expired
+                    return False
+                
+                # Create new lock
+                lock = TaskLock(
+                    task_id=task_id,
+                    worker_id=worker_id,
+                    expires_at=datetime.utcnow() + timedelta(seconds=lock_duration)
+                )
+                session.add(lock)
+                session.commit()
+                return True
+                
+            except Exception as e:
+                logger.error(f"Error acquiring lock for task {task_id}: {str(e)}")
+                session.rollback()
+                return False
+    
+    @staticmethod
+    def release_lock(task_id, worker_id):
+        """Release a task lock
+        
+        Args:
+            task_id: ID of task to unlock
+            worker_id: ID of worker that held the lock
+        """
+        from database import session_scope
+        
+        with session_scope() as session:
+            try:
+                # Only delete if this worker owns the lock
+                session.query(TaskLock).filter(
+                    TaskLock.task_id == task_id,
+                    TaskLock.worker_id == worker_id
+                ).delete()
+                session.commit()
+            except Exception as e:
+                logger.error(f"Error releasing lock for task {task_id}: {str(e)}")
+                session.rollback()
 
 # Removed plugin registration code
 
