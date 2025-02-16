@@ -448,7 +448,10 @@ async function editBlockParameters(button) {
         });
         if (!response.ok) throw new Error('Failed to load parameters');
         
-        const parameters = await response.json();
+        const data = await response.json();
+        if (data.status !== 'success' || !data.parameters) {
+            throw new Error('Invalid parameter data received');
+        }
         
         // Set block name in modal
         const blockNameInput = document.getElementById('block_name');
@@ -467,7 +470,7 @@ async function editBlockParameters(button) {
         container.appendChild(blockInfo);
         
         // Add parameters
-        for (const [name, config] of Object.entries(parameters)) {
+        for (const [name, config] of Object.entries(data.parameters)) {
             const formGroup = document.createElement('div');
             formGroup.className = 'mb-3';
             
@@ -579,11 +582,15 @@ async function saveBlockParameters() {
         });
         if (!response.ok) throw new Error('Failed to load parameters');
         
-        const parameterDefs = await response.json();
+        const data = await response.json();
+        if (data.status !== 'success' || !data.parameters) {
+            throw new Error('Invalid parameter data received');
+        }
+
         let isValid = true;
         let firstInvalidParam = null;
 
-        for (const [paramName, config] of Object.entries(parameterDefs)) {
+        for (const [paramName, config] of Object.entries(data.parameters)) {
             if (config.required && (parameters[paramName] === undefined || parameters[paramName] === null || 
                 (typeof parameters[paramName] === 'string' && parameters[paramName].trim() === ''))) {
                 isValid = false;
@@ -611,10 +618,10 @@ async function saveBlockParameters() {
         if (editButton) {
             editButton.focus();
         }
+        
     } catch (error) {
-        console.error('Error validating parameters:', error);
-        showToast('Failed to validate parameters', 'danger');
-        blockValidationCache.set(window.currentEditingBlock.data.id, false);
+        console.error('Error saving parameters:', error);
+        showToast('Failed to save parameters: ' + error.message, 'error');
     }
 }
 
