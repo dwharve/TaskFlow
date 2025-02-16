@@ -1,8 +1,9 @@
 import importlib
 import os
 import pkgutil
-from typing import Dict, List, Type, Optional
+from typing import Dict, List, Type, Optional, Any
 import logging
+from datetime import datetime
 
 from blocks.base import BaseBlock, InputBlock, ProcessingBlock, ActionBlock
 
@@ -117,58 +118,71 @@ class BlockManager:
         """
         return self._blocks
     
-    async def execute_block_chain(self, task) -> Dict[str, List[Dict]]:
+    async def _handle_block_execution(self, block_instance, input_data, block_params, block_name, block_type):
+        """Helper function to handle block execution with consistent error handling
+        
+        Args:
+            block_instance: Instance of the block to execute
+            input_data: Input data for the block
+            block_params: Parameters for the block
+            block_name: Name of the block
+            block_type: Type of the block
+            
+        Returns:
+            Tuple of (success, result)
+            success: Boolean indicating if execution was successful
+            result: Result data or error information
+        """
+        try:
+            if block_type == "action":
+                result = await block_instance.execute(input_data, block_params)
+            else:
+                result = await block_instance.process(input_data, block_params)
+            return True, result
+        except Exception as e:
+            error_msg = f"Error executing {block_type} block {block_name}: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return False, {
+                "error": str(e),
+                "input": input_data,
+                "block_name": block_name,
+                "block_type": block_type,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+
+    async def execute_block_chain(self, task) -> Dict[str, Dict[str, List[Any]]]:
         """Execute a chain of blocks for a task
         
         Args:
-            task: Task model instance containing block chain configuration
+            task: Task to execute
             
         Returns:
-            Dictionary containing the results of each block in the chain
+            Dictionary of results by block type and name
         """
-        logger.info(f"Executing block chain for task {task.id}")
         results = {
             "input": {},
             "processing": {},
             "action": {}
         }
-        
-        # Get block chain in execution order
-        block_chain = task.get_block_chain()
-        if not block_chain:
-            error_msg = f"No blocks found for task {task.id}"
-            logger.error(error_msg)
-            raise ValueError(error_msg)
-            
-        # Track outputs of each block
         block_outputs = {}
         
-        # Execute blocks in order
-        for block in block_chain:
-            logger.info(f"Executing {block.type} block: {block.name}")
-            
-            # Get block class
-            block_class = self.get_block(block.type, block.name)
-            if not block_class:
-                error_msg = f"{block.type.title()} block {block.name} not found"
-                logger.error(error_msg)
-                raise ValueError(error_msg)
-            
-            # Create block instance
-            block_instance = block_class()
+        for block in task.blocks:
+            logger.info(f"Executing {block.type} block {block.name}")
+            block_instance = self.get_block(block.type, block.name)()
+            block_params = block.get_parameters()
+            block_params['task_id'] = task.id
             
             try:
-                # Get block parameters
-                block_params = block.get_parameters()
-                
                 if block.type == "input":
-                    # Get URL from parameters if present
-                    url = block_params.pop('url', None) if block_params else None
-                    # Execute input block
-                    result = await block_instance.collect(url, block_params)
-                    results["input"][block.name] = result
-                    block_outputs[block.id] = result
-                    
+                    success, result = await self._handle_block_execution(
+                        block_instance, None, block_params, block.name, block.type
+                    )
+                    if success:
+                        results["input"][block.name] = result
+                        block_outputs[block.id] = result
+                    else:
+                        raise ValueError(f"Input block {block.name} failed: {result['error']}")
+                
                 elif block.type == "processing":
                     # Get input data from dependencies
                     input_data = []
@@ -176,14 +190,15 @@ class BlockManager:
                         if conn.source_block_id in block_outputs:
                             input_data.extend(block_outputs[conn.source_block_id])
                     
-                    # Add task_id to processing block parameters
-                    block_params['task_id'] = task.id
-                    
-                    # Execute processing block
-                    result = await block_instance.process(input_data, block_params)
-                    results["processing"][block.name] = result
-                    block_outputs[block.id] = result
-                    
+                    success, result = await self._handle_block_execution(
+                        block_instance, input_data, block_params, block.name, block.type
+                    )
+                    if success:
+                        results["processing"][block.name] = result
+                        block_outputs[block.id] = result
+                    else:
+                        raise ValueError(f"Processing block {block.name} failed: {result['error']}")
+                
                 elif block.type == "action":
                     # Get input data from dependencies
                     input_data = []
@@ -191,18 +206,14 @@ class BlockManager:
                         if conn.source_block_id in block_outputs:
                             input_data.extend(block_outputs[conn.source_block_id])
                     
-                    # Execute action block
+                    # Execute action block for each input item
                     action_results = []
                     for item in input_data:
-                        try:
-                            result = await block_instance.execute(item, block_params)
-                            action_results.append(result)
-                        except Exception as e:
-                            logger.error(f"Error executing action block {block.name} for item: {str(e)}")
-                            action_results.append({
-                                "error": str(e),
-                                "item": item
-                            })
+                        success, result = await self._handle_block_execution(
+                            block_instance, item, block_params, block.name, block.type
+                        )
+                        action_results.append(result if success else {"error": result["error"], "item": item})
+                    
                     results["action"][block.name] = action_results
                     block_outputs[block.id] = action_results
                 

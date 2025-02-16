@@ -5,6 +5,7 @@ from datetime import datetime
 from blocks.base import ProcessingBlock
 from models import db, ItemState
 import logging
+import time
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -108,11 +109,18 @@ class UpdateFilter(ProcessingBlock):
                 logger.debug(f"Skipping previously seen item with hash {item_hash}")
         
         # Commit all new states
-        try:
-            db.session.commit()
-            logger.info(f"Found {len(new_items)} new items out of {len(data)} total items")
-        except Exception as e:
-            logger.error(f"Error saving state to database: {e}")
-            db.session.rollback()
-        
-        return new_items 
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                db.session.commit()
+                logger.info(f"Found {len(new_items)} new items out of {len(data)} total items")
+                return new_items
+            except Exception as e:
+                logger.error(f"Error saving state to database (attempt {attempt + 1}/{max_retries}): {e}")
+                db.session.rollback()
+                if attempt < max_retries - 1:
+                    time.sleep(0.1 * (attempt + 1))  # Exponential backoff
+                    continue
+                else:
+                    logger.error("Failed to save state after all retries")
+                    raise RuntimeError(f"Failed to save state after {max_retries} attempts: {str(e)}") 

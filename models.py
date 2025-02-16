@@ -6,6 +6,8 @@ import json
 from sqlalchemy import event
 from sqlalchemy.orm import scoped_session
 from contextlib import contextmanager
+import logging
+import time
 
 # Initialize SQLAlchemy with thread-safe session
 db = SQLAlchemy()
@@ -83,20 +85,39 @@ class Task(db.Model):
     blocks = db.relationship('Block', backref='task', lazy=True, cascade='all, delete-orphan')
     item_states = db.relationship('ItemState', backref='task', lazy=True, cascade='all, delete-orphan')
     
-    def update_status(self, new_status):
-        """Thread-safe status update with optimistic locking"""
+    def update_status(self, new_status, max_retries=3):
+        """Thread-safe status update with optimistic locking and retries"""
         from database import session_scope
-        with session_scope() as session:
-            task = session.merge(self)
-            current_version = task.version
-            task.status = new_status
-            task.version += 1
-            session.flush()
-            
-            # Verify no other transaction has modified this record
-            if task.version != current_version + 1:
-                session.rollback()
-                raise Exception("Task was modified by another transaction")
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                with session_scope() as session:
+                    task = session.merge(self)
+                    current_version = task.version
+                    task.status = new_status
+                    task.version += 1
+                    session.flush()
+                    
+                    # Verify no other transaction has modified this record
+                    if task.version != current_version + 1:
+                        session.rollback()
+                        raise Exception("Task was modified by another transaction")
+                    
+                    # If we got here, the update was successful
+                    logger.info(f"Successfully updated task {task.id} status to {new_status} (attempt {attempt + 1})")
+                    return True
+                    
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Failed to update task {self.id} status on attempt {attempt + 1}: {str(e)}")
+                if attempt < max_retries - 1:
+                    time.sleep(0.1 * (attempt + 1))  # Exponential backoff
+                continue
+        
+        # If we got here, all retries failed
+        logger.error(f"Failed to update task {self.id} status after {max_retries} attempts")
+        raise last_error
     
     def get_block_data(self):
         """Get data for all blocks"""

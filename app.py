@@ -1,55 +1,186 @@
-import sys
+import os
+import logging
+import json
+import asyncio
+import secrets
+import threading
+from functools import wraps
+from typing import Any, Dict, Optional, Tuple, Union
+
 from flask import Flask, request, jsonify, render_template, redirect, url_for, flash
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from flask_migrate import Migrate
 from flask_wtf.csrf import CSRFProtect
-from functools import wraps
-import os
-from datetime import datetime
-import json
-import asyncio
-import logging
-import secrets
 from flask_wtf import FlaskForm
 from wtforms import StringField, PasswordField
 from wtforms.validators import DataRequired, Length, EqualTo
-import threading
 from sqlalchemy import inspect
 import flask_migrate
 
-from models import db, User, Task, Settings, Block, BlockConnection
-from database import session_scope, get_session
-from executor import executor
+# Common response helpers
+def api_response(
+    message: str,
+    status: str = 'success',
+    code: int = 200,
+    **kwargs: Any
+) -> Tuple[Dict[str, Any], int]:
+    """Standardized API response helper
+    
+    Args:
+        message: Response message
+        status: Response status ('success' or 'error')
+        code: HTTP status code
+        **kwargs: Additional key-value pairs to include in response
+        
+    Returns:
+        Tuple of (response dict, status code)
+    """
+    response = {
+        'status': status,
+        'message': message,
+        **kwargs
+    }
+    return jsonify(response), code
 
-# Initialize Flask app
-app = Flask(__name__)
+def error_response(message: str, code: int = 400) -> Tuple[Dict[str, Any], int]:
+    """Standardized error response helper
+    
+    Args:
+        message: Error message
+        code: HTTP status code
+        
+    Returns:
+        Tuple of (error response dict, status code)
+    """
+    return api_response(message, status='error', code=code)
 
-# Get log level from environment
+def task_access_required(f):
+    """Decorator to check if user has access to task
+    
+    Checks if the task exists and belongs to the current user.
+    Task ID should be the first argument after self/cls.
+    """
+    @wraps(f)
+    def decorated_function(task_id: int, *args: Any, **kwargs: Any) -> Any:
+        with session_scope() as session:
+            task = session.get(Task, task_id)
+            if not task:
+                return error_response('Task not found', 404)
+            if task.user_id != current_user.id:
+                if request.is_json:
+                    return error_response('Access denied', 403)
+                flash('Access denied.', 'danger')
+                return redirect(url_for('tasks'))
+            return f(task, *args, **kwargs)
+    return decorated_function
+
+def with_transaction(f):
+    """Decorator to handle database transactions
+    
+    Provides a session object as first argument to the decorated function.
+    Handles commit/rollback automatically.
+    """
+    @wraps(f)
+    def decorated_function(*args: Any, **kwargs: Any) -> Any:
+        with session_scope() as session:
+            try:
+                result = f(session, *args, **kwargs)
+                return result
+            except Exception as e:
+                logger.error(f"Transaction error: {str(e)}", exc_info=True)
+                raise
+    return decorated_function
+
+# Configure logging before importing models
 log_level = os.environ.get('LOG_LEVEL', 'INFO')
-# Get log level from arguments
-# log_level = sys.argv[1] if len(sys.argv) > 1 else log_level
-
-# Set up logging with pid and thread name
 logging.basicConfig(
     level=log_level,
     format='%(asctime)s - %(process)d - %(name)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
-    force=True  # Force reconfiguration of the root logger
+    force=True
 )
 logger = logging.getLogger(__name__)
+
+# Set third-party loggers to warning level to reduce noise
+for logger_name in ['werkzeug', 'sqlalchemy', 'apscheduler']:
+    logging.getLogger(logger_name).setLevel(logging.WARNING)
+
 logger.info("Starting application")
 logger.info(f"Log level: {log_level}")
 
-# Set third-party loggers to warning level to reduce noise
-logging.getLogger('werkzeug').setLevel(logging.WARNING)
-logging.getLogger('sqlalchemy').setLevel(logging.WARNING)
-logging.getLogger('apscheduler').setLevel(logging.WARNING)
+from models import db, User, Task, Settings, Block, BlockConnection
+from database import session_scope, get_session
+from executor import executor
+from services.block_services import BlockValidationService, BlockProcessor
+
+# Initialize Flask app
+app = Flask(__name__)
 
 @app.teardown_appcontext
 def remove_session(exception=None):
     """Remove the session at the end of the request"""
     session = get_session()
     session.remove()
+
+def initialize_database(app):
+    """Initialize database, create tables, and handle migrations"""
+    try:
+        # Create database directory if it doesn't exist
+        os.makedirs('instance', exist_ok=True)
+        
+        # Initialize migrations directory if it doesn't exist
+        if not os.path.exists('migrations'):
+            logger.info("Initializing migrations directory")
+            with app.app_context():
+                flask_migrate.init()
+        
+        # Create database if it doesn't exist
+        if not os.path.exists('instance/database.db'):
+            with app.app_context():
+                db.create_all()
+                logger.info("Created new database")
+        
+        # Check for schema changes
+        with app.app_context():
+            inspector = inspect(db.engine)
+            current_metadata = db.Model.metadata
+            current_metadata.reflect(bind=db.engine)
+            
+            expected_tables = set(current_metadata.tables.keys())
+            existing_tables = set(inspector.get_table_names())
+            
+            needs_migration = False
+            
+            # Check for missing tables
+            if missing_tables := expected_tables - existing_tables:
+                logger.info(f"Missing tables detected: {missing_tables}")
+                needs_migration = True
+            
+            # Check for schema changes in existing tables
+            for table in existing_tables & expected_tables:
+                expected_columns = {c.name for c in current_metadata.tables[table].columns}
+                existing_columns = {c['name'] for c in inspector.get_columns(table)}
+                
+                if expected_columns != existing_columns:
+                    logger.info(f"Schema mismatch in table {table}")
+                    logger.debug(f"Expected columns: {expected_columns}")
+                    logger.debug(f"Existing columns: {existing_columns}")
+                    needs_migration = True
+                    break
+            
+            if needs_migration:
+                logger.info("Generating and applying database migrations")
+                try:
+                    flask_migrate.migrate()
+                    flask_migrate.upgrade()
+                    logger.info("Database migrations applied successfully")
+                except Exception as e:
+                    logger.error(f"Error applying migrations: {str(e)}", exc_info=True)
+                    raise
+    
+    except Exception as e:
+        logger.error(f"Error initializing database: {str(e)}", exc_info=True)
+        raise
 
 # Configuration
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///database.db')
@@ -60,75 +191,14 @@ app.config['WTF_CSRF_ENABLED'] = True
 db.init_app(app)
 migrate = Migrate(app, db)
 
-with app.app_context():
-    try:
-        # Create database directory if it doesn't exist
-        os.makedirs('instance', exist_ok=True)
-        
-        # Initialize migrations directory if it doesn't exist
-        if not os.path.exists('migrations'):
-            logger.info("Initializing migrations directory")
-            migrate.init_app(app, db)
-            with app.app_context():
-                flask_migrate.init()
-        
-        # Create database if it doesn't exist
-        if not os.path.exists('instance/database.db'):
-            db.create_all()
-            logger.info("Created new database")
-        
-        # Check if any tables are missing and create them
-        inspector = inspect(db.engine)
-        current_metadata = db.Model.metadata
-        current_metadata.reflect(bind=db.engine)
-        
-        # Get the list of tables from the models and database
-        expected_tables = set(current_metadata.tables.keys())
-        existing_tables = set(inspector.get_table_names())
-        
-        # Check for missing tables or schema changes
-        needs_migration = False
-        
-        # Check for missing tables
-        if expected_tables - existing_tables:
-            logger.info(f"Missing tables detected: {expected_tables - existing_tables}")
-            needs_migration = True
-        
-        # Check for schema changes in existing tables
-        for table in existing_tables & expected_tables:
-            expected_columns = {c.name for c in current_metadata.tables[table].columns}
-            existing_columns = {c['name'] for c in inspector.get_columns(table)}
-            
-            if expected_columns != existing_columns:
-                logger.info(f"Schema mismatch in table {table}")
-                logger.debug(f"Expected columns: {expected_columns}")
-                logger.debug(f"Existing columns: {existing_columns}")
-                needs_migration = True
-                break
-        
-        if needs_migration:
-            logger.info("Generating and applying database migrations")
-            try:
-                # Generate migration
-                with app.app_context():
-                    flask_migrate.migrate()
-                    # Apply migration
-                    flask_migrate.upgrade()
-                logger.info("Database migrations applied successfully")
-            except Exception as e:
-                logger.error(f"Error applying migrations: {str(e)}", exc_info=True)
-                raise
-    
-    except Exception as e:
-        logger.error(f"Error checking/creating tables: {str(e)}", exc_info=True)
-        raise
+# Initialize database
+initialize_database(app)
 
-# Check if secret key is in database
+# Initialize secret key
 secret_key = Settings.get_setting('SECRET_KEY')
 if not secret_key:
     secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
     Settings.set_setting('SECRET_KEY', secret_key)
-
 app.config['SECRET_KEY'] = secret_key
 
 # Initialize and start scheduler
@@ -472,93 +542,42 @@ def new_task():
             logger.info("Creating new task")
             logger.debug(f"Form data: {request.form}")
             
-            # Create task
             with session_scope() as session:
+                # Create task
                 task = Task(
                     name=request.form['name'],
                     user_id=current_user.id,
                     schedule=request.form.get('schedule')
                 )
                 session.add(task)
-                session.flush()  # Get task ID
+                session.flush()
                 
                 # Parse block data
                 blocks_data = json.loads(request.form['blocks_data'])
                 logger.debug(f"Blocks data: {blocks_data}")
                 
-                # Create blocks
-                blocks = {}  # id -> Block
-                for block_data in blocks_data['blocks']:
-                    block = Block(
-                        task_id=task.id,
-                        name=block_data['name'],
-                        type=block_data['type'],
-                        display_name=block_data.get('display_name'),
-                        position_x=block_data.get('position_x', 0),
-                        position_y=block_data.get('position_y', 0)
-                    )
-                    
-                    # Get parameters for this block
-                    block_params = {}
-                    param_prefix = f'{block.type}_param_{block.name}_'
-                    for key, value in request.form.items():
-                        if key.startswith(param_prefix):
-                            param_name = key.replace(param_prefix, '')
-                            block_params[param_name] = value
-                    
-                    # Use block parameters directly from blocks_data
-                    if 'parameters' in block_data:
-                        block_params = block_data['parameters']
-                    
-                    # Validate parameters
-                    block_params = validate_block_parameters(
-                        block.name, block.type, block_params)
-                    block.set_parameters(block_params)
-                    
-                    session.add(block)
-                    session.flush()  # Get block ID
-                    blocks[block_data['id']] = block
+                # Process blocks and connections
+                blocks, block_errors = BlockProcessor.process_blocks(task, blocks_data, session)
+                if block_errors:
+                    return error_response('Invalid block configuration', details=block_errors)
                 
-                # Create connections
-                blocks_list = list(blocks.values())  # Convert blocks dict to list for indexing
-                for conn_data in blocks_data['connections']:
-                    source_index = int(conn_data['source'])
-                    target_index = int(conn_data['target'])
-                    
-                    if 0 <= source_index < len(blocks_list) and 0 <= target_index < len(blocks_list):
-                        conn = BlockConnection(
-                            source_block_id=blocks_list[source_index].id,
-                            target_block_id=blocks_list[target_index].id,
-                            input_name=conn_data.get('input_name')
-                        )
-                        session.add(conn)
-                    else:
-                        logger.error(f"Invalid connection indices: source={source_index}, target={target_index}, blocks_len={len(blocks_list)}")
+                conn_errors = BlockProcessor.process_connections(blocks_data, blocks, session)
+                if conn_errors:
+                    return error_response('Invalid block connections', details=conn_errors)
                 
                 # Schedule the task if it has a schedule
                 if task.schedule:
                     logger.info(f"Scheduling task with schedule: {task.schedule}")
                     scheduler.schedule_task(task)
-            
-            # Return JSON response for AJAX request
-            return jsonify({
-                'status': 'success',
-                'message': 'Task created successfully',
-                'redirect': url_for('tasks')
-            })
-            
+                
+                return api_response('Task created successfully', redirect=url_for('tasks'))
+                
         except ValueError as e:
             logger.error(f"Error creating task: {str(e)}")
-            return jsonify({
-                'status': 'error',
-                'error': str(e)
-            }), 400
+            return error_response(str(e))
         except Exception as e:
             logger.error(f"Unexpected error creating task: {str(e)}", exc_info=True)
-            return jsonify({
-                'status': 'error',
-                'error': 'An unexpected error occurred.'
-            }), 500
+            return error_response('An unexpected error occurred')
     
     # GET request - show form
     return render_template('task_form.html',
@@ -570,19 +589,15 @@ def new_task():
 
 @app.route('/tasks/<int:task_id>/edit', methods=['GET', 'POST'])
 @login_required
-def edit_task(task_id):
-    task = Task.query.get_or_404(task_id)
-    if task.user_id != current_user.id:
-        flash('Access denied.', 'danger')
-        return redirect(url_for('tasks'))
-    
+@task_access_required
+def edit_task(task):
     if request.method == 'POST':
         try:
-            logger.info(f"Editing task {task_id}")
+            logger.info(f"Editing task {task.id}")
             logger.debug(f"Form data: {request.form}")
             
             with session_scope() as session:
-                task = session.get(Task, task_id)
+                task = session.merge(task)
                 
                 # Update basic task info
                 task.name = request.form['name']
@@ -592,100 +607,35 @@ def edit_task(task_id):
                 blocks_data = json.loads(request.form['blocks_data'])
                 logger.debug(f"Blocks data: {blocks_data}")
                 
-                # Create a map of existing blocks by name and type
+                # Create a map of existing blocks
                 existing_blocks = {(block.name, block.type): block for block in task.blocks}
                 
-                # Track which blocks are still in use
-                used_blocks = set()
+                # Process blocks and connections
+                blocks, block_errors = BlockProcessor.process_blocks(
+                    task, blocks_data, session, existing_blocks)
+                if block_errors:
+                    return error_response('Invalid block configuration', details=block_errors)
                 
-                # Update or create blocks
-                blocks = {}
-                for block_data in blocks_data['blocks']:
-                    block_key = (block_data['name'], block_data['type'])
-                    
-                    if block_key in existing_blocks:
-                        # Update existing block
-                        block = existing_blocks[block_key]
-                        block.display_name = block_data.get('display_name')
-                        block.position_x = block_data.get('position_x', 0)
-                        block.position_y = block_data.get('position_y', 0)
-                        used_blocks.add(block_key)
-                    else:
-                        # Create new block
-                        block = Block(
-                            task_id=task.id,
-                            name=block_data['name'],
-                            type=block_data['type'],
-                            display_name=block_data.get('display_name'),
-                            position_x=block_data.get('position_x', 0),
-                            position_y=block_data.get('position_y', 0)
-                        )
-                        session.add(block)
-                    
-                    # Update parameters
-                    if 'parameters' in block_data:
-                        block_params = block_data['parameters']
-                        # Validate parameters
-                        block_params = validate_block_parameters(
-                            block.name, block.type, block_params)
-                        block.set_parameters(block_params)
-                    
-                    session.flush()  # Get block ID
-                    blocks[block_data['id']] = block
-                
-                # Remove blocks that are no longer used
-                for block_key, block in existing_blocks.items():
-                    if block_key not in used_blocks:
-                        session.delete(block)
-                
-                # Delete all existing connections
-                for block in task.blocks:
-                    for conn in block.inputs:
-                        session.delete(conn)
-                
-                # Create new connections
-                blocks_list = list(blocks.values())  # Convert blocks dict to list for indexing
-                for conn_data in blocks_data['connections']:
-                    source_index = int(conn_data['source'])
-                    target_index = int(conn_data['target'])
-                    
-                    if 0 <= source_index < len(blocks_list) and 0 <= target_index < len(blocks_list):
-                        conn = BlockConnection(
-                            source_block_id=blocks_list[source_index].id,
-                            target_block_id=blocks_list[target_index].id,
-                            input_name=conn_data.get('input_name')
-                        )
-                        session.add(conn)
-                    else:
-                        logger.error(f"Invalid connection indices: source={source_index}, target={target_index}, blocks_len={len(blocks_list)}")
+                conn_errors = BlockProcessor.process_connections(blocks_data, blocks, session)
+                if conn_errors:
+                    return error_response('Invalid block connections', details=conn_errors)
                 
                 # Update schedule
                 if task.schedule:
-                    logger.info(f"Updating schedule for task {task_id}: {task.schedule}")
+                    logger.info(f"Updating schedule for task {task.id}: {task.schedule}")
                     scheduler.schedule_task(task)
                 else:
-                    logger.info(f"Removing schedule for task {task_id}")
+                    logger.info(f"Removing schedule for task {task.id}")
                     scheduler.remove_task(task)
-            
-            # Return JSON response for AJAX request
-            return jsonify({
-                'status': 'success',
-                'message': 'Task updated successfully',
-                'redirect': url_for('tasks')
-            })
-            
+                
+                return api_response('Task updated successfully', redirect=url_for('tasks'))
+                
         except ValueError as e:
-            logger.error(f"Error updating task {task_id}: {str(e)}")
-            return jsonify({
-                'status': 'error',
-                'error': str(e)
-            }), 400
+            logger.error(f"Error updating task {task.id}: {str(e)}")
+            return error_response(str(e))
         except Exception as e:
-            logger.error(f"Unexpected error updating task {task_id}: {str(e)}", exc_info=True)
-            return jsonify({
-                'status': 'error',
-                'error': 'An unexpected error occurred.'
-            }), 500
+            logger.error(f"Unexpected error updating task {task.id}: {str(e)}", exc_info=True)
+            return error_response('An unexpected error occurred')
     
     # GET request - show form
     return render_template('task_form.html',
@@ -743,29 +693,24 @@ def view_task(task_id):
 
 @app.route('/api/tasks/<int:task_id>/run', methods=['POST'])
 @login_required
-def run_task(task_id):
-    with session_scope() as session:
-        task = session.get(Task, task_id)
-        if not task:
-            return jsonify({'error': 'Task not found'}), 404
-        
-        if task.user_id != current_user.id and not current_user.is_admin:
-            return jsonify({'error': 'Unauthorized'}), 403
-        
-        try:
+@task_access_required
+def run_task(task):
+    try:
+        with session_scope() as session:
+            task = session.merge(task)
             task.update_status('running')
-            session.commit()
             
             # Run task in background thread
-            thread = threading.Thread(target=run_in_thread, args=(app, task_id))
+            thread = threading.Thread(target=run_in_thread, args=(app, task.id))
             thread.daemon = True
             thread.start()
             
-            return jsonify({'message': 'Task started successfully'})
-        except Exception as e:
-            logger.error(f"Error starting task {task_id}: {str(e)}")
-            task.update_status('failed')
-            return jsonify({'error': str(e)}), 500
+            return api_response('Task started successfully')
+            
+    except Exception as e:
+        logger.error(f"Error starting task {task.id}: {str(e)}", exc_info=True)
+        task.update_status('failed')
+        return error_response(str(e))
 
 def run_in_thread(app, task_id):
     """Execute task in a separate thread with its own session"""
@@ -816,17 +761,14 @@ def blocks():
 
 @app.route('/api/tasks/<int:task_id>/status')
 @login_required
-def get_task_status(task_id):
-    task = Task.query.get_or_404(task_id)
-    if task.user_id != current_user.id:
-        return jsonify({'error': 'Access denied'}), 403
-    
-    return jsonify({
-        'status': task.status,
-        'status_class': status_badge(task.status),
-        'last_run': format_datetime(task.last_run) if task.last_run else None,
-        'block_data': task.get_block_data()
-    })
+@task_access_required
+def get_task_status(task):
+    return api_response('Task status retrieved successfully',
+        status=task.status,
+        status_class=status_badge(task.status),
+        last_run=format_datetime(task.last_run) if task.last_run else None,
+        block_data=task.get_block_data()
+    )
 
 @app.route('/api/tasks/status')
 @login_required
@@ -862,35 +804,29 @@ def get_tasks_status():
 
 @app.route('/api/tasks/<int:task_id>', methods=['DELETE'])
 @login_required
-def delete_task(task_id):
-    with session_scope() as session:
-        task = session.get(Task, task_id)
-        if not task:
-            return jsonify({'error': 'Task not found'}), 404
-        
-        if task.user_id != current_user.id:
-            return jsonify({'error': 'Access denied'}), 403
-        
-        try:
+@task_access_required
+def delete_task(task):
+    try:
+        with session_scope() as session:
+            task = session.merge(task)
+            
             # Remove task from scheduler if scheduled
             scheduler.remove_task(task)
             
             # Delete the task
             session.delete(task)
             
-            return jsonify({'message': 'Task deleted successfully'})
-        except Exception as e:
-            logger.error(f"Error deleting task {task_id}: {str(e)}")
-            return jsonify({'error': 'Failed to delete task'}), 500
+            return api_response('Task deleted successfully')
+            
+    except Exception as e:
+        logger.error(f"Error deleting task {task.id}: {str(e)}", exc_info=True)
+        return error_response('Failed to delete task')
 
 @app.route('/api/tasks/<int:task_id>/blocks')
 @login_required
-def get_task_blocks(task_id):
+@task_access_required
+def get_task_blocks(task):
     """Get block data for a task"""
-    task = Task.query.get_or_404(task_id)
-    if task.user_id != current_user.id:
-        return jsonify({'error': 'Access denied'}), 403
-    
     blocks_data = {
         'blocks': [{
             'id': block.id,
@@ -908,7 +844,7 @@ def get_task_blocks(task_id):
         } for block in task.blocks for conn in block.inputs]
     }
     
-    return jsonify(blocks_data)
+    return api_response('Block data retrieved successfully', blocks=blocks_data)
 
 if __name__ == '__main__':
     app.run(debug=True) 

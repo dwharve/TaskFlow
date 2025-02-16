@@ -28,9 +28,10 @@ class TaskScheduler:
     
     def __init__(self):
         logger.info("Initializing TaskScheduler")
+        self._running_tasks = {}
         self.scheduler = BackgroundScheduler()
-        self._running_tasks: Dict[int, threading.Thread] = {}
-        self.app: Optional[Flask] = None
+        self.app = None
+        self._cleanup_lock = threading.Lock()
         self._task_queues: Dict[str, queue.Queue] = {}
         self._setup_pubsub()
     
@@ -79,9 +80,10 @@ class TaskScheduler:
         Args:
             task_id: ID of completed task
         """
-        if task_id in self._running_tasks:
-            thread = self._running_tasks.pop(task_id)
-            logger.info(f"Cleaned up task {task_id}. Thread alive: {thread.is_alive()}")
+        with self._cleanup_lock:
+            if task_id in self._running_tasks:
+                thread = self._running_tasks.pop(task_id)
+                logger.info(f"Cleaned up task {task_id}. Thread alive: {thread.is_alive()}")
     
     def init_app(self, app: Flask):
         """Initialize the scheduler with Flask app
@@ -164,11 +166,7 @@ class TaskScheduler:
             logger.info(f"Stopping {len(running_tasks)} running tasks")
             for task_id, thread in running_tasks:
                 logger.info(f"Waiting for task {task_id} to complete")
-                thread.join(timeout=1)
-                if thread.is_alive():
-                    logger.warning(f"Task {task_id} did not complete within timeout")
-                else:
-                    logger.info(f"Task {task_id} completed successfully")
+                self.cleanup_task_resources(task_id)
         except Exception as e:
             logger.error(f"Error during scheduler shutdown: {str(e)}")
             raise
@@ -297,16 +295,28 @@ class TaskScheduler:
             except Exception as inner_e:
                 logger.error(f"Failed to update task status: {str(inner_e)}")
     
+    def cleanup_task_resources(self, task_id):
+        """Clean up all resources associated with a task"""
+        with self._cleanup_lock:
+            if task_id in self._running_tasks:
+                thread = self._running_tasks.pop(task_id)
+                try:
+                    # Give the thread a chance to finish gracefully
+                    if thread.is_alive():
+                        thread.join(timeout=1)
+                except Exception as e:
+                    logger.error(f"Error while joining task thread {task_id}: {str(e)}")
+                finally:
+                    # Always remove from running tasks, even if join failed
+                    del self._running_tasks[task_id]
+                    logger.info(f"Cleaned up resources for task {task_id}")
+    
     def _run_task_thread(self, task_id: int):
         """Execute task in a thread
         
         Args:
             task_id: ID of the task to run
         """
-        if not self.app:
-            logger.error(f"Cannot run task thread {task_id}: Flask app not initialized")
-            return
-            
         thread_name = threading.current_thread().name
         logger.info(f"Thread {thread_name} starting execution of task {task_id}")
         
@@ -332,17 +342,16 @@ class TaskScheduler:
             logger.error(f"Traceback: {traceback.format_exc()}")
             try:
                 with self.app.app_context():
-                    task.status = 'failed'
-                    db.session.commit()
+                    task = Task.query.get(task_id)
+                    if task:
+                        task.update_status('failed')
                 pubsub.publish(TASK_FAILED_TOPIC, task_id)
             except Exception as inner_e:
                 logger.error(f"Failed to update task status: {str(inner_e)}")
             
         finally:
-            # Clean up
-            if task_id in self._running_tasks:
-                del self._running_tasks[task_id]
-            logger.info(f"Removed task {task_id} from running tasks. Thread {thread_name} complete")
+            # Always clean up resources
+            self.cleanup_task_resources(task_id)
     
     async def _execute_task(self, task: Task):
         """Execute a task
