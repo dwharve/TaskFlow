@@ -8,8 +8,8 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)
 # Create log directory if it doesn't exist
 mkdir -p /var/log
 
-# Initialize the database (this will recreate tables if needed)
-python -c "from app import app; from database import init_db; init_db(app)"
+# Initialize the database if it doesn't exist
+python -c "from database import init_db; init_db()"
 
-# Start supervisor to manage both gunicorn and scheduler
-exec supervisord -c supervisord.conf
+# Start supervisord
+exec /usr/bin/supervisord -n -c /etc/supervisor/conf.d/supervisord.conf

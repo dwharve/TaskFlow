@@ -112,9 +112,24 @@ from models import db, User, Task, Settings, Block, BlockConnection
 from database import session_scope, get_session
 from executor import executor
 from services.block_services import BlockValidationService, BlockProcessor
+from scheduler import scheduler  # Import scheduler before using it
 
 # Initialize Flask app
 app = Flask(__name__)
+
+# Configure app
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///instance/database.db')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# Initialize database
+db.init_app(app)
+
+# Initialize scheduler - but don't start it in Gunicorn workers
+scheduler.init_app(app)
+
+# Only start scheduler if this is the scheduler process
+if os.environ.get('SCHEDULER_PROCESS'):
+    scheduler.start()
 
 @app.teardown_appcontext
 def remove_session(exception=None):
@@ -182,20 +197,6 @@ def initialize_database(app):
         logger.error(f"Error initializing database: {str(e)}", exc_info=True)
         raise
 
-# Configuration
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///database.db')
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['WTF_CSRF_ENABLED'] = True
-
-# Initialize extensions
-db.init_app(app)
-migrate = Migrate(app, db)
-
-# Initialize database and configure session
-initialize_database(app)
-from database import init_db
-init_db(app)
-
 # Initialize secret key using session_scope
 with session_scope() as session:
     secret_key = Settings.get_setting('SECRET_KEY', session=session)
@@ -203,10 +204,6 @@ with session_scope() as session:
         secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
         Settings.set_setting('SECRET_KEY', secret_key, session=session)
 app.config['SECRET_KEY'] = secret_key
-
-# Import scheduler but don't start it in the web app
-from scheduler import scheduler
-scheduler.init_app(app)
 
 from blocks.manager import manager
 

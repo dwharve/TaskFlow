@@ -164,15 +164,15 @@ class TaskScheduler:
         """
         self.app = app
         
-        # Always initialize scheduler in standalone mode or if not in a Gunicorn worker
-        is_worker = bool(os.environ.get('GUNICORN_FD', ''))
+        # Only initialize scheduler in standalone mode or if explicitly set as the scheduler process
+        is_scheduler_process = bool(os.environ.get('SCHEDULER_PROCESS', ''))
         is_standalone = bool(os.environ.get('SCHEDULER_STANDALONE', ''))
         
-        if is_standalone or not is_worker:
-            logger.info("Initializing scheduler in standalone/main process")
+        if is_standalone or is_scheduler_process:
+            logger.info("Initializing scheduler in standalone/scheduler process")
             self.scheduler = BackgroundScheduler()
         else:
-            logger.info("Gunicorn worker process detected - skipping scheduler initialization")
+            logger.info("Not a scheduler process - skipping scheduler initialization")
             self.scheduler = None
             
         logger.info("Initialized scheduler with Flask app")
@@ -329,6 +329,11 @@ class TaskScheduler:
             logger.error(f"Cannot run task {task_id}: Flask app not initialized")
             return
             
+        # Only allow task execution in the scheduler process
+        if not self.scheduler:
+            logger.info(f"Not a scheduler process - skipping task execution for task {task_id}")
+            return
+            
         logger.info(f"Initiating task run for task {task_id}")
         
         # Check if task is already running locally
@@ -388,7 +393,7 @@ class TaskScheduler:
         """
         try:
             with self.app.app_context():
-                task = Task.query.get(task_id)
+                task = db.session.get(Task, task_id)
                 if not task:
                     logger.error(f"Task {task_id} not found")
                     return
