@@ -11,6 +11,7 @@ import atexit
 import os
 import sys
 from flask import Flask, current_app
+from sqlalchemy import text
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -472,8 +473,8 @@ def create_app():
         retry_interval = 1
         for attempt in range(max_retries):
             try:
-                # Try to query the database
-                db.session.execute('SELECT 1')
+                # Try to query the database using proper SQLAlchemy text()
+                db.session.execute(text('SELECT 1'))
                 logger.info("Database is ready")
                 break
             except Exception as e:
