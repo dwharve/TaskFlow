@@ -7,11 +7,12 @@ import traceback
 import json
 import queue
 import time
+import atexit
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import and_
-from flask import Flask
+from flask import Flask, current_app
 
 from models import Task, db, TaskLock
 from blocks.manager import manager
@@ -28,15 +29,29 @@ TASK_FAILED_TOPIC = "task_failed"
 class TaskScheduler:
     """Scheduler for running tasks on a schedule"""
     
+    _instance = None
+    _lock = threading.Lock()
+    
+    def __new__(cls):
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super(TaskScheduler, cls).__new__(cls)
+            return cls._instance
+    
     def __init__(self):
-        logger.info("Initializing TaskScheduler")
-        self._running_tasks = {}
-        self.scheduler = BackgroundScheduler()
-        self.app = None
-        self._cleanup_lock = threading.Lock()
-        self._task_queues: Dict[str, queue.Queue] = {}
-        self._worker_id = f"worker_{int(time.time() * 1000)}"  # Unique ID for this worker
-        self._setup_pubsub()
+        if not hasattr(self, '_initialized'):
+            logger.info("Initializing TaskScheduler")
+            self._running_tasks = {}
+            self.scheduler = BackgroundScheduler()
+            self.app = None
+            self._cleanup_lock = threading.Lock()
+            self._task_queues: Dict[str, queue.Queue] = {}
+            self._worker_id = f"worker_{int(time.time() * 1000)}"  # Unique ID for this worker
+            self._setup_pubsub()
+            self._initialized = True
+            
+            # Register cleanup on exit
+            atexit.register(self.stop)
     
     def _setup_pubsub(self):
         """Setup pub/sub subscriptions"""
@@ -317,9 +332,10 @@ class TaskScheduler:
             if task_id in self._running_tasks:
                 thread = self._running_tasks.pop(task_id)
                 try:
-                    # Give the thread a chance to finish gracefully
-                    if thread.is_alive():
-                        thread.join(timeout=1)
+                    # Only try to join if it's not the current thread
+                    if thread.ident != threading.current_thread().ident:
+                        if thread.is_alive():
+                            thread.join(timeout=1)
                 except Exception as e:
                     logger.error(f"Error while joining task thread {task_id}: {str(e)}")
                 finally:
@@ -352,12 +368,21 @@ class TaskScheduler:
         except Exception as e:
             logger.error(f"Error executing task {task_id}: {str(e)}")
             logger.error(traceback.format_exc())
-            task.update_status('failed')
+            with self.app.app_context():
+                task = Task.query.get(task_id)
+                if task:
+                    task.update_status('failed')
             
         finally:
             # Always release lock when task is done
             TaskLock.release_lock(task_id, self._worker_id)
-            self.cleanup_task_resources(task_id)
+            # Use a separate thread for cleanup to avoid self-join
+            cleanup_thread = threading.Thread(
+                target=self.cleanup_task_resources,
+                args=(task_id,),
+                daemon=True
+            )
+            cleanup_thread.start()
     
     async def _execute_task(self, task: Task):
         """Execute a task
