@@ -6,6 +6,7 @@ import threading
 import traceback
 import json
 import queue
+import time
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 # Topics for pub/sub communication
 TASK_START_TOPIC = "task_start"
+TASK_START_ACK_TOPIC = "task_start_ack"
 TASK_COMPLETE_TOPIC = "task_complete"
 TASK_FAILED_TOPIC = "task_failed"
 
@@ -33,11 +35,14 @@ class TaskScheduler:
         self.app = None
         self._cleanup_lock = threading.Lock()
         self._task_queues: Dict[str, queue.Queue] = {}
+        self._worker_id = f"worker_{int(time.time() * 1000)}"  # Unique ID for this worker
         self._setup_pubsub()
     
     def _setup_pubsub(self):
         """Setup pub/sub subscriptions"""
-        # Subscribe to task completion events
+        # Subscribe to all task-related events
+        self._task_queues[TASK_START_TOPIC] = pubsub.subscribe(TASK_START_TOPIC)
+        self._task_queues[TASK_START_ACK_TOPIC] = pubsub.subscribe(TASK_START_ACK_TOPIC)
         self._task_queues[TASK_COMPLETE_TOPIC] = pubsub.subscribe(TASK_COMPLETE_TOPIC)
         self._task_queues[TASK_FAILED_TOPIC] = pubsub.subscribe(TASK_FAILED_TOPIC)
         
@@ -49,21 +54,53 @@ class TaskScheduler:
         """Listen for task events from other workers"""
         while True:
             try:
+                # Check start requests
+                try:
+                    message = self._task_queues[TASK_START_TOPIC].get_nowait()
+                    task_id = message.data
+                    # If we're running this task, acknowledge it
+                    if task_id in self._running_tasks:
+                        logger.info(f"Task {task_id} is already running on this worker, sending ACK")
+                        pubsub.publish(TASK_START_ACK_TOPIC, {
+                            'task_id': task_id,
+                            'worker_id': self._worker_id
+                        })
+                except queue.Empty:
+                    pass
+                
+                # Check start acknowledgments
+                try:
+                    message = self._task_queues[TASK_START_ACK_TOPIC].get_nowait()
+                    data = message.data
+                    task_id = data['task_id']
+                    worker_id = data['worker_id']
+                    if worker_id != self._worker_id:
+                        logger.info(f"Task {task_id} is already running on worker {worker_id}")
+                        self._cleanup_task(task_id)
+                except queue.Empty:
+                    pass
+                
                 # Check complete queue
                 try:
                     message = self._task_queues[TASK_COMPLETE_TOPIC].get_nowait()
-                    task_id = message.data
-                    logger.info(f"Received task completion notification for task {task_id}")
-                    self._cleanup_task(task_id)
+                    data = message.data
+                    task_id = data['task_id']
+                    worker_id = data['worker_id']
+                    logger.info(f"Received task completion notification for task {task_id} from worker {worker_id}")
+                    if worker_id == self._worker_id:
+                        self._cleanup_task(task_id)
                 except queue.Empty:
                     pass
                 
                 # Check failed queue
                 try:
                     message = self._task_queues[TASK_FAILED_TOPIC].get_nowait()
-                    task_id = message.data
-                    logger.info(f"Received task failure notification for task {task_id}")
-                    self._cleanup_task(task_id)
+                    data = message.data
+                    task_id = data['task_id']
+                    worker_id = data['worker_id']
+                    logger.info(f"Received task failure notification for task {task_id} from worker {worker_id}")
+                    if worker_id == self._worker_id:
+                        self._cleanup_task(task_id)
                 except queue.Empty:
                     pass
                 
@@ -243,57 +280,26 @@ class TaskScheduler:
         logger.info(f"Initiating task run for task {task_id}")
         
         # Check if task is already running by publishing a start request
-        # Other workers will respond if they're already running it
         pubsub.publish(TASK_START_TOPIC, task_id)
         
         # Brief wait to allow other workers to respond
-        threading.Event().wait(0.1)
+        threading.Event().wait(0.5)  # Increased wait time for better coordination
         
-        # Check if task is already running
-        if task_id in self._running_tasks:
-            logger.warning(f"Task {task_id} is already running, skipping this execution")
-            thread = self._running_tasks[task_id]
-            logger.debug(f"Running thread info - Alive: {thread.is_alive()}, Name: {thread.name}")
-            return
-        
-        # Get task
-        try:
-            with self.app.app_context():
-                task = Task.query.get(task_id)
-                if not task:
-                    logger.error(f"Task {task_id} not found in database")
-                    return
-                
-                logger.info(f"Starting execution of task {task_id} - {task.name}")
-                
-                # Update task status
-                task.status = 'running'
-                task.last_run = datetime.utcnow()
-                db.session.commit()
-                logger.info(f"Updated task {task_id} status to 'running'")
-            
-            # Create thread to run the task
-            thread = threading.Thread(
-                target=self._run_task_thread,
-                args=(task_id,),
-                name=f"Task-{task_id}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-            )
-            thread.daemon = True
-            self._running_tasks[task_id] = thread
-            thread.start()
-            logger.info(f"Started thread {thread.name} for task {task_id}")
-            
-        except Exception as e:
-            logger.error(f"Error initiating task {task_id}: {str(e)}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            try:
-                with self.app.app_context():
-                    task.status = 'failed'
-                    db.session.commit()
-                    logger.info(f"Updated task {task_id} status to 'failed'")
-                pubsub.publish(TASK_FAILED_TOPIC, task_id)
-            except Exception as inner_e:
-                logger.error(f"Failed to update task status: {str(inner_e)}")
+        # If we haven't received an ACK, start the task
+        with self._cleanup_lock:
+            if task_id not in self._running_tasks:
+                logger.info(f"No other worker is running task {task_id}, starting it")
+                thread = threading.Thread(
+                    target=self._run_task_thread,
+                    args=(task_id,),
+                    name=f"Task-{task_id}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+                )
+                thread.daemon = True
+                self._running_tasks[task_id] = thread
+                thread.start()
+                logger.info(f"Started thread {thread.name} for task {task_id}")
+            else:
+                logger.info(f"Task {task_id} is already running")
     
     def cleanup_task_resources(self, task_id):
         """Clean up all resources associated with a task"""
@@ -312,46 +318,42 @@ class TaskScheduler:
                     logger.info(f"Cleaned up resources for task {task_id}")
     
     def _run_task_thread(self, task_id: int):
-        """Execute task in a thread
+        """Run a task in a separate thread
         
         Args:
             task_id: ID of the task to run
         """
-        thread_name = threading.current_thread().name
-        logger.info(f"Thread {thread_name} starting execution of task {task_id}")
-        
         try:
             with self.app.app_context():
                 task = Task.query.get(task_id)
                 if not task:
-                    logger.error(f"Task {task_id} not found when starting thread execution")
+                    logger.error(f"Task {task_id} not found")
                     return
                 
-                # Execute task
+                logger.info(f"Starting execution of task {task_id} - {task.name}")
+                task.update_status('running')
+                
+                # Execute the task
                 asyncio.run(self._execute_task(task))
                 
-                # Update status and notify other workers
-                task.status = 'completed'
-                task.last_run = datetime.utcnow()
-                db.session.commit()
-                pubsub.publish(TASK_COMPLETE_TOPIC, task_id)
-                logger.info(f"Task {task_id} completed successfully")
+                # Notify completion
+                pubsub.publish(TASK_COMPLETE_TOPIC, {
+                    'task_id': task_id,
+                    'worker_id': self._worker_id
+                })
                 
         except Exception as e:
-            logger.error(f"Error in task thread {task_id}: {str(e)}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            try:
-                with self.app.app_context():
-                    task = Task.query.get(task_id)
-                    if task:
-                        task.update_status('failed')
-                pubsub.publish(TASK_FAILED_TOPIC, task_id)
-            except Exception as inner_e:
-                logger.error(f"Failed to update task status: {str(inner_e)}")
+            logger.error(f"Error executing task {task_id}: {str(e)}")
+            logger.error(traceback.format_exc())
+            task.update_status('failed')
             
-        finally:
-            # Always clean up resources
-            self.cleanup_task_resources(task_id)
+            # Notify failure
+            pubsub.publish(TASK_FAILED_TOPIC, {
+                'task_id': task_id,
+                'worker_id': self._worker_id
+            })
+            
+            raise
     
     async def _execute_task(self, task: Task):
         """Execute a task
