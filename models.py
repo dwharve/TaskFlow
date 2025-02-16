@@ -1,13 +1,19 @@
+import logging
+from datetime import datetime
+from typing import Dict, Any, Optional, List
+import json
+import time
+
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import UserMixin
-from datetime import datetime
 from werkzeug.security import generate_password_hash, check_password_hash
 import json
 from sqlalchemy import event
 from sqlalchemy.orm import scoped_session
 from contextlib import contextmanager
-import logging
-import time
+
+# Initialize logger
+logger = logging.getLogger(__name__)
 
 # Initialize SQLAlchemy with thread-safe session
 db = SQLAlchemy()
