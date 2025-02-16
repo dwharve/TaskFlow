@@ -204,10 +204,9 @@ with session_scope() as session:
         Settings.set_setting('SECRET_KEY', secret_key, session=session)
 app.config['SECRET_KEY'] = secret_key
 
-# Initialize and start scheduler
+# Import scheduler but don't start it in the web app
 from scheduler import scheduler
 scheduler.init_app(app)
-scheduler.start()
 
 from blocks.manager import manager
 
