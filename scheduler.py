@@ -165,16 +165,19 @@ class TaskScheduler:
         """
         self.app = app
         
-        # Only initialize scheduler in standalone mode or if explicitly set as the scheduler process
+        # Initialize scheduler in all processes, but only start it in the scheduler process
+        logger.info("Initializing scheduler")
+        self.scheduler = BackgroundScheduler()
+        
+        # Only start scheduler in standalone mode or if explicitly set as the scheduler process
         is_scheduler_process = bool(os.environ.get('SCHEDULER_PROCESS', ''))
         is_standalone = bool(os.environ.get('SCHEDULER_STANDALONE', ''))
         
         if is_standalone or is_scheduler_process:
-            logger.info("Initializing scheduler in standalone/scheduler process")
-            self.scheduler = BackgroundScheduler()
+            logger.info("Starting scheduler in standalone/scheduler process")
+            self.scheduler.start()
         else:
-            logger.info("Not a scheduler process - skipping scheduler initialization")
-            self.scheduler = None
+            logger.info("Worker process - scheduler initialized but not started")
             
         logger.info("Initialized scheduler with Flask app")
     
@@ -273,6 +276,11 @@ class TaskScheduler:
             return
         
         try:
+            # Only attempt to schedule if we have a scheduler
+            if not self.scheduler:
+                logger.warning(f"Cannot schedule task {task.id}: scheduler not initialized")
+                return
+            
             # Remove any existing job
             try:
                 self.scheduler.remove_job(str(task.id))
