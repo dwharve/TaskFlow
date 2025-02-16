@@ -48,13 +48,29 @@ RUN groupadd -r appgroup && \
     useradd -r -g appgroup appuser && \
     mkdir -p /app/instance /app/logs && \
     chown -R appuser:appgroup /app && \
-    chmod 770 /app/instance /app/logs && \
-    chown appuser:appgroup /app/instance/database.db 2>/dev/null || true && \
-    chmod 660 /app/instance/database.db 2>/dev/null || true && \
-    chmod 750 /app/*.py && \
-    chmod 770 /app/start.sh
+    chmod -R 750 /app && \
+    chmod 770 /app/instance /app/logs
 
-# Switch to non-root user - will be overridden by start.sh for specific processes
+# Create and set permissions for database directory
+RUN mkdir -p /app/instance && \
+    chown -R appuser:appgroup /app/instance && \
+    chmod 770 /app/instance && \
+    touch /app/instance/database.db && \
+    chown appuser:appgroup /app/instance/database.db && \
+    chmod 660 /app/instance/database.db
+
+# Create directory for process management
+RUN mkdir -p /app/run && \
+    chown -R appuser:appgroup /app/run && \
+    chmod 770 /app/run && \
+    touch /app/run/flask.pid /app/run/scheduler.pid && \
+    chown appuser:appgroup /app/run/*.pid && \
+    chmod 660 /app/run/*.pid
+
+# Make scripts executable
+RUN chmod 770 /app/start.sh
+
+# Switch to non-root user
 USER appuser
 
 # Expose port
