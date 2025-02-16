@@ -51,7 +51,6 @@ RUN apt-get update && \
 # Set environment variables for the application
 ENV FLASK_APP=app.py \
     FLASK_ENV=production \
-    DATABASE_URL=sqlite:///instance/database.db \
     PYTHONPATH=/app \
     LOG_LEVEL=INFO \
     WORKERS=4 \
@@ -60,12 +59,15 @@ ENV FLASK_APP=app.py \
 # Copy application files
 COPY . .
 
-# Create instance directory for SQLite database and log directory
-RUN mkdir -p instance /var/log && \
-    chmod 777 instance /var/log
+# Create instance directory for SQLite database and log directory with proper permissions
+RUN mkdir -p /app/instance /var/log && \
+    chown -R nobody:nobody /app /var/log
 
 # Make the script executable
 RUN chmod +x /app/start.sh
+
+# Switch to non-root user
+USER nobody
 
 # Expose port
 EXPOSE 5000
