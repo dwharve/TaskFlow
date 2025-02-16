@@ -8,6 +8,7 @@ import json
 import queue
 import time
 import atexit
+import os
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -42,7 +43,7 @@ class TaskScheduler:
         if not hasattr(self, '_initialized'):
             logger.info("Initializing TaskScheduler")
             self._running_tasks = {}
-            self.scheduler = BackgroundScheduler()
+            self.scheduler = None
             self.app = None
             self._cleanup_lock = threading.Lock()
             self._task_queues: Dict[str, queue.Queue] = {}
@@ -144,6 +145,15 @@ class TaskScheduler:
             app: Flask application instance
         """
         self.app = app
+        
+        # Only initialize scheduler in the main process
+        if os.environ.get('GUNICORN_WORKER_ID', '0') == '0':
+            logger.info("Initializing scheduler in main process")
+            self.scheduler = BackgroundScheduler()
+        else:
+            logger.info("Worker process - skipping scheduler initialization")
+            self.scheduler = None
+            
         logger.info("Initialized scheduler with Flask app")
     
     def _load_existing_tasks(self):
@@ -184,9 +194,13 @@ class TaskScheduler:
         if not self.app:
             logger.error("Cannot start scheduler: Flask app not initialized")
             raise RuntimeError("Flask app not initialized")
+        
+        # Only start scheduler in main process
+        if self.scheduler is None:
+            logger.info("Worker process - skipping scheduler start")
+            return
             
         try:
-            # First start the scheduler
             self.scheduler.start()
             logger.info("Scheduler started successfully")
             
