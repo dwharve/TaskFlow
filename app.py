@@ -53,8 +53,10 @@ def initialize_database(app):
         # Initialize Flask-SQLAlchemy
         db.init_app(app)
         
-        # Create database directory if it doesn't exist
-        os.makedirs('instance', exist_ok=True)
+        # Create database directory if it doesn't exist and ensure proper permissions
+        instance_path = os.path.dirname(app.config['SQLALCHEMY_DATABASE_URI'].replace('sqlite:///', ''))
+        os.makedirs(instance_path, exist_ok=True)
+        os.chmod(instance_path, 0o777)  # Ensure directory is writable
         
         # Initialize migrations directory if it doesn't exist
         if not os.path.exists('migrations'):

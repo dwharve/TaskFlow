@@ -61,7 +61,8 @@ COPY . .
 
 # Create instance directory for SQLite database and log directory with proper permissions
 RUN mkdir -p /app/instance /var/log && \
-chmod +x /app/start.sh
+    chmod 777 /app/instance && \
+    chmod +x /app/start.sh
 
 # Expose port
 EXPOSE 5000
