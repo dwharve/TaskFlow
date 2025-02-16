@@ -40,21 +40,41 @@ ENV FLASK_APP=app.py \
     WORKERS=4 \
     TIMEOUT=120
 
-# Create a non-root user
-RUN useradd -m appuser && \
-    chown -R appuser:appuser /app
+# Create app group and users
+RUN groupadd -r appgroup && \
+    useradd -r -g appgroup flaskuser && \
+    useradd -r -g appgroup scheduleruser
+
+# Create necessary directories with appropriate permissions
+RUN mkdir -p /app/instance /app/logs && \
+    chown -R flaskuser:appgroup /app && \
+    chmod -R 750 /app && \
+    chmod 770 /app/instance /app/logs
 
 # Copy application files
 COPY . .
 
-# Create instance directory for SQLite database
-RUN mkdir -p instance && chown -R appuser:appuser instance
+# Set specific permissions for shared resources
+RUN chown -R flaskuser:appgroup /app/instance && \
+    chmod 770 /app/instance && \
+    chown flaskuser:appgroup /app/database.db 2>/dev/null || true && \
+    chmod 660 /app/database.db 2>/dev/null || true && \
+    chmod 750 /app/*.py && \
+    chmod 770 /app/start.sh
 
-# Make the script executable
-RUN chmod +x /app/start.sh
+# Create a directory for process management
+RUN mkdir -p /app/run && \
+    chown -R flaskuser:appgroup /app/run && \
+    chmod 770 /app/run
 
-# Switch to non-root user
-USER appuser
+# Create pid files with correct permissions
+RUN touch /app/run/flask.pid /app/run/scheduler.pid && \
+    chown flaskuser:appgroup /app/run/flask.pid && \
+    chown scheduleruser:appgroup /app/run/scheduler.pid && \
+    chmod 660 /app/run/*.pid
+
+# Switch to non-root user - will be overridden by start.sh for specific processes
+USER flaskuser
 
 # Expose port
 EXPOSE 5000
