@@ -918,4 +918,63 @@ document.addEventListener('DOMContentLoaded', function() {
         // Load existing blocks if editing
         loadBlocksFromApi();
     }
-}); 
+});
+
+async function loadBlockData() {
+    try {
+        const taskId = document.getElementById('task-id').value;
+        const { blocks, connections } = await loadTaskBlocks(taskId);
+        loadExistingBlocks(blocks, connections);
+    } catch (error) {
+        console.error('Failed to load block data:', error);
+        showError('Failed to load block data: ' + error.message);
+    }
+}
+
+async function loadBlockParametersForm(blockType, blockName) {
+    try {
+        const parameters = await loadBlockParameters(blockType, blockName);
+        populateParametersForm(parameters);
+    } catch (error) {
+        console.error('Failed to load block parameters:', error);
+        showError('Failed to load block parameters: ' + error.message);
+    }
+}
+
+async function updateTaskStatus() {
+    try {
+        const taskId = document.getElementById('task-id').value;
+        const taskStatus = await getTaskStatus(taskId);
+        updateStatusDisplay(taskStatus);
+    } catch (error) {
+        console.error('Failed to update task status:', error);
+        showError('Failed to update task status: ' + error.message);
+    }
+}
+
+async function runCurrentTask() {
+    try {
+        const taskId = document.getElementById('task-id').value;
+        await runTask(taskId);
+        showSuccess('Task started successfully');
+        updateTaskStatus();
+    } catch (error) {
+        console.error('Failed to run task:', error);
+        showError('Failed to run task: ' + error.message);
+    }
+}
+
+async function deleteCurrentTask() {
+    if (!confirm('Are you sure you want to delete this task?')) {
+        return;
+    }
+    
+    try {
+        const taskId = document.getElementById('task-id').value;
+        await deleteTask(taskId);
+        window.location.href = '/tasks';
+    } catch (error) {
+        console.error('Failed to delete task:', error);
+        showError('Failed to delete task: ' + error.message);
+    }
+} 

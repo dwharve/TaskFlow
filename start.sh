@@ -6,7 +6,7 @@ export FLASK_ENV=production
 export PYTHONPATH=$PYTHONPATH:$(pwd)
 
 # Initialize the database (this will recreate tables if needed)
-python -c "from app import app, init_db; init_db()"
+python -c "from app import app; from database import init_db; init_db(app)"
 
 # Start gunicorn with thread-safe configuration
 gunicorn \

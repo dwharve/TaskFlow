@@ -490,14 +490,14 @@ def deactivate_user(user_id):
 def activate_user(user_id):
     user = User.query.get_or_404(user_id)
     user.activate()
-    return jsonify({'status': 'success'})
+    return api_response('User activated successfully')
 
 @app.route('/api/users/<int:user_id>')
 @login_required
 @admin_required
 def get_user(user_id):
     user = User.query.get_or_404(user_id)
-    return jsonify(user.to_dict())
+    return api_response('User details retrieved successfully', user=user.to_dict())
 
 class ProfileForm(FlaskForm):
     current_password = PasswordField('Current Password')
@@ -744,10 +744,10 @@ def get_block_parameters(block_type, block_name):
     """
     block_class = manager.get_block(block_type, block_name)
     if not block_class:
-        return jsonify({'error': f"{block_type.title()} block {block_name} not found"}), 404
+        return error_response(f"{block_type.title()} block {block_name} not found", 404)
     
     block = block_class()
-    return jsonify(block.parameters)
+    return api_response('Block parameters retrieved successfully', parameters=block.parameters)
 
 @app.route('/blocks')
 @login_required
@@ -776,13 +776,13 @@ def get_tasks_status():
     # Get task IDs from query parameter
     task_ids = request.args.get('ids', '')
     if not task_ids:
-        return jsonify({'error': 'No task IDs provided'}), 400
+        return error_response('No task IDs provided')
     
     try:
         # Convert comma-separated string to list of integers
         task_ids = [int(id) for id in task_ids.split(',')]
     except ValueError:
-        return jsonify({'error': 'Invalid task ID format'}), 400
+        return error_response('Invalid task ID format')
     
     # Query all tasks at once
     tasks = Task.query.filter(
@@ -800,7 +800,7 @@ def get_tasks_status():
             'block_data': task.get_block_data()
         }
     
-    return jsonify(response)
+    return api_response('Task statuses retrieved successfully', tasks=response)
 
 @app.route('/api/tasks/<int:task_id>', methods=['DELETE'])
 @login_required
@@ -827,24 +827,25 @@ def delete_task(task):
 @task_access_required
 def get_task_blocks(task):
     """Get block data for a task"""
-    blocks_data = {
-        'blocks': [{
-            'id': block.id,
-            'name': block.name,
-            'type': block.type,
-            'parameters': block.get_parameters(),
-            'position_x': block.position_x,
-            'position_y': block.position_y,
-            'display_name': block.display_name or block.name
-        } for block in task.blocks],
-        'connections': [{
-            'source': conn.source_block_id,
-            'target': conn.target_block_id,
-            'input_name': conn.input_name
-        } for block in task.blocks for conn in block.inputs]
-    }
+    blocks = [{
+        'id': block.id,
+        'name': block.name,
+        'type': block.type,
+        'parameters': block.get_parameters(),
+        'position_x': block.position_x,
+        'position_y': block.position_y,
+        'display_name': block.display_name or block.name
+    } for block in task.blocks]
     
-    return api_response('Block data retrieved successfully', blocks=blocks_data)
+    connections = [{
+        'source': conn.source_block_id,
+        'target': conn.target_block_id,
+        'input_name': conn.input_name
+    } for block in task.blocks for conn in block.inputs]
+    
+    return api_response('Block data retrieved successfully', 
+                       blocks=blocks,
+                       connections=connections)
 
 if __name__ == '__main__':
     app.run(debug=True) 
