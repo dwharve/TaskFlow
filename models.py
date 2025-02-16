@@ -11,7 +11,6 @@ import time
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, Text, JSON
 from sqlalchemy.orm import relationship
-import bcrypt
 
 # Create base model class
 Base = declarative_base()
@@ -23,11 +22,11 @@ db = SQLAlchemy()
 logger = logging.getLogger(__name__)
 
 # Models
-class User(Base, db.Model):
+class User(Base, db.Model, UserMixin):
     __tablename__ = 'users'
     id = Column(Integer, primary_key=True)
     username = Column(String(80), unique=True, nullable=False)
-    password_hash = Column(String(128), nullable=False)
+    password_hash = Column(String(256), nullable=False)
     is_admin = Column(Boolean, default=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -38,12 +37,11 @@ class User(Base, db.Model):
     
     def set_password(self, password):
         """Hash and set the password"""
-        salt = bcrypt.gensalt()
-        self.password_hash = bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
+        self.password_hash = generate_password_hash(password)
     
     def check_password(self, password):
         """Check if the password matches"""
-        return bcrypt.checkpw(password.encode('utf-8'), self.password_hash.encode('utf-8'))
+        return check_password_hash(self.password_hash, password)
     
     def update_last_login(self):
         from database import session_scope
