@@ -34,31 +34,28 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Set environment variables for the application
 ENV FLASK_APP=app.py \
     FLASK_ENV=production \
-    DATABASE_URL=sqlite:///instance/database.db \
+    DATABASE_URL=sqlite:///database.db \
     PYTHONPATH=/app \
     LOG_LEVEL=INFO \
     WORKERS=4 \
     TIMEOUT=120
 
-# Install required system packages
+# Install supervisor and create necessary directories
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends util-linux sqlite3 && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get install -y --no-install-recommends supervisor && \
+    rm -rf /var/lib/apt/lists/* && \
+    mkdir -p /var/log/supervisor /var/run/supervisor && \
+    chmod 777 /var/log/supervisor /var/run/supervisor
 
 # Copy application files
 COPY . .
 
-# Create necessary directories and set permissions
-RUN mkdir -p /app/instance /app/logs /app/run && \
-    groupadd -r appgroup && \
-    useradd -r -g appgroup appuser && \
-    # Set base permissions
-    chown -R appuser:appgroup /app && \
-    # Make start script executable
-    chmod +x /app/start.sh
+# Create instance directory for SQLite database and log directory
+RUN mkdir -p instance /var/log && \
+    chmod 777 instance /var/log
 
-# Switch to non-root user - will be overridden by start.sh for specific processes
-USER appuser
+# Make the script executable
+RUN chmod +x /app/start.sh
 
 # Expose port
 EXPOSE 5000

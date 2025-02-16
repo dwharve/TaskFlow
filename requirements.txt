@@ -10,4 +10,5 @@ python-dotenv==1.0.0
 Flask-WTF==1.2.1
 email-validator==2.1.0.post1
 beautifulsoup4==4.12.3
-gunicorn==21.2.0 
+gunicorn==21.2.0
+supervisor==4.2.5 

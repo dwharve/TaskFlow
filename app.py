@@ -204,7 +204,11 @@ with session_scope() as session:
         Settings.set_setting('SECRET_KEY', secret_key, session=session)
 app.config['SECRET_KEY'] = secret_key
 
-# Remove scheduler initialization - it will run in a separate process
+# Initialize and start scheduler
+from scheduler import scheduler
+scheduler.init_app(app)
+scheduler.start()
+
 from blocks.manager import manager
 
 login_manager = LoginManager()
