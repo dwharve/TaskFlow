@@ -47,12 +47,13 @@ app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', f'sqlite:///{os.path.join(os.path.abspath(os.path.dirname(__file__)), "instance", "database.db")}')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
+# Initialize extensions
+db.init_app(app)
+migrate = Migrate(app, db)
+
 def initialize_database(app):
     """Initialize database, create tables, and handle migrations"""
     try:
-        # Initialize Flask-SQLAlchemy
-        db.init_app(app)
-        
         # Create database directory if it doesn't exist and ensure proper permissions
         instance_path = os.path.dirname(app.config['SQLALCHEMY_DATABASE_URI'].replace('sqlite:///', ''))
         os.makedirs(instance_path, exist_ok=True)
@@ -64,56 +65,57 @@ def initialize_database(app):
             with open(db_path, 'a'):
                 pass
             os.chmod(db_path, 0o666)  # Make database file writable
+            
+            # Create initial database without migrations
+            with app.app_context():
+                db.create_all()
+                logger.info("Created new database")
         
         # Initialize migrations directory if it doesn't exist
         if not os.path.exists('migrations'):
             logger.info("Initializing migrations directory")
             with app.app_context():
                 flask_migrate.init()
-        
-        # Create database if it doesn't exist
-        if not os.path.exists('instance/database.db'):
+                flask_migrate.migrate()
+                flask_migrate.upgrade()
+        else:
+            # Check for schema changes
             with app.app_context():
-                db.create_all()
-                logger.info("Created new database")
-        
-        # Check for schema changes
-        with app.app_context():
-            inspector = inspect(db.engine)
-            current_metadata = db.Model.metadata
-            current_metadata.reflect(bind=db.engine)
-            
-            expected_tables = set(current_metadata.tables.keys())
-            existing_tables = set(inspector.get_table_names())
-            
-            needs_migration = False
-            
-            # Check for missing tables
-            if missing_tables := expected_tables - existing_tables:
-                logger.info(f"Missing tables detected: {missing_tables}")
-                needs_migration = True
-            
-            # Check for schema changes in existing tables
-            for table in existing_tables & expected_tables:
-                expected_columns = {c.name for c in current_metadata.tables[table].columns}
-                existing_columns = {c['name'] for c in inspector.get_columns(table)}
+                inspector = inspect(db.engine)
+                current_metadata = db.Model.metadata
+                current_metadata.reflect(bind=db.engine)
                 
-                if expected_columns != existing_columns:
-                    logger.info(f"Schema mismatch in table {table}")
-                    logger.debug(f"Expected columns: {expected_columns}")
-                    logger.debug(f"Existing columns: {existing_columns}")
+                expected_tables = set(current_metadata.tables.keys())
+                existing_tables = set(inspector.get_table_names())
+                
+                needs_migration = False
+                
+                # Check for missing tables
+                if missing_tables := expected_tables - existing_tables:
+                    logger.info(f"Missing tables detected: {missing_tables}")
                     needs_migration = True
-                    break
-            
-            if needs_migration:
-                logger.info("Generating and applying database migrations")
-                try:
-                    flask_migrate.migrate()
-                    flask_migrate.upgrade()
-                    logger.info("Database migrations applied successfully")
-                except Exception as e:
-                    logger.error(f"Error applying migrations: {str(e)}", exc_info=True)
-                    raise
+                
+                # Check for schema changes in existing tables
+                for table in existing_tables & expected_tables:
+                    expected_columns = {c.name for c in current_metadata.tables[table].columns}
+                    existing_columns = {c['name'] for c in inspector.get_columns(table)}
+                    
+                    if expected_columns != existing_columns:
+                        logger.info(f"Schema mismatch in table {table}")
+                        logger.debug(f"Expected columns: {expected_columns}")
+                        logger.debug(f"Existing columns: {existing_columns}")
+                        needs_migration = True
+                        break
+                
+                if needs_migration:
+                    logger.info("Generating and applying database migrations")
+                    try:
+                        flask_migrate.migrate()
+                        flask_migrate.upgrade()
+                        logger.info("Database migrations applied successfully")
+                    except Exception as e:
+                        logger.error(f"Error applying migrations: {str(e)}", exc_info=True)
+                        raise
     
     except Exception as e:
         logger.error(f"Error initializing database: {str(e)}", exc_info=True)

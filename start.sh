@@ -15,6 +15,10 @@ DB_FILE="$INSTANCE_DIR/database.db"
 touch "$DB_FILE"
 chmod 666 "$DB_FILE"
 
+# Create migrations directory if it doesn't exist
+mkdir -p migrations
+chmod 777 migrations
+
 # Initialize the database with migrations
 python -c "from app import app, initialize_database; initialize_database(app)"
 
